@@ -1,0 +1,16 @@
+# Виртуальное окружение
+venv
+.venv
+env
+
+# Сборка и кэш Python
+__pycache__
+.pyc
+build
+dist
+.spec
+
+# Временные файлы и весы Whisper (если качаются локально)
+.mp3
+.wav
+models
