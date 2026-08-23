@@ -1,16 +1,19 @@
 # Виртуальное окружение
-venv
-.venv
-env
+venv/
+.venv/
+env/
 
 # Сборка и кэш Python
-__pycache__
-.pyc
-build
-dist
-.spec
+__pycache__/
+*.py[cod]
+build/
+dist/
 
-# Временные файлы и весы Whisper (если качаются локально)
-.mp3
-.wav
-models
+# Временные файлы и веса моделей
+*.mp3
+*.wav
+models/
+
+# Локальные настройки и история
+config.json
+history.json
