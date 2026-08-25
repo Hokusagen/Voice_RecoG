@@ -83,6 +83,32 @@ def material(luminance: float | None) -> Material:
         return DARK_MATERIAL
     return LIGHT_MATERIAL if luminance >= MATERIAL_THRESHOLD else DARK_MATERIAL
 
+
+def material_blend(t: float) -> Material:
+    """Смесь тёмного и светлого стекла: t=0 — тёмное, t=1 — светлое.
+
+    Нужна живому стеклу: фон под плашкой меняется прямо во время показа, и
+    резкая смена материала читалась бы как мигание. На концах отдаёт сами
+    константы — кэши, ключующиеся по цветам материала, остаются тёплыми.
+    """
+    t = clamp(t)
+    if t <= 0.0:
+        return DARK_MATERIAL
+    if t >= 1.0:
+        return LIGHT_MATERIAL
+    dark, light = DARK_MATERIAL, LIGHT_MATERIAL
+    return Material(
+        scrim_top=mix(dark.scrim_top, light.scrim_top, t),
+        scrim_bottom=mix(dark.scrim_bottom, light.scrim_bottom, t),
+        sheen=mix(dark.sheen, light.sheen, t),
+        edge_top=mix(dark.edge_top, light.edge_top, t),
+        edge_bottom=mix(dark.edge_bottom, light.edge_bottom, t),
+        title=mix(dark.title, light.title, t),
+        detail=mix(dark.detail, light.detail, t),
+        text_shadow=mix(dark.text_shadow, light.text_shadow, t),
+        accent_darken=lerp(dark.accent_darken, light.accent_darken, t),
+    )
+
 #: Ведущий цвет стадии.
 ACCENTS: dict[Stage, QColor] = {
     Stage.IDLE: _c("#9aa2b4"),

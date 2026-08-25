@@ -12,6 +12,10 @@ numpy>=2.0
 keyboard>=0.13
 pywin32>=306
 
+# Живое стекло: DXGI Desktop Duplication (на гибридной графике сам откатится
+# на GDI, пакет всё равно нужен для проверки).
+bettercam>=1.0
+
 # Запросы к Ollama.
 requests>=2.32
 
