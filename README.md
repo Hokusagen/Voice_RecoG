@@ -123,6 +123,7 @@ venv\Scripts\python.exe src\main.py
 | `whisper.compute_type` | `int8_float16` экономит вдвое видеопамяти против `float16` |
 | `whisper.initial_prompt` | Термины вашей предметной области — Whisper распознает их точнее |
 | `llm.enabled` | Выключить постобработку целиком |
+| `llm.journal` | Журнал диктовок в `dictations.jsonl`: сырой текст, правка модели, тайминги |
 | `llm.system_prompt` | Правила вычитки текста |
 | `audio.preroll_ms` | Сколько звука «до нажатия» подмешивать, чтобы не срезалось начало |
 | `audio.idle_close_s` | Через сколько простоя отпускать микрофон |
@@ -133,10 +134,18 @@ venv\Scripts\python.exe src\main.py
 ## Сборка в .exe
 
 ```bash
-venv\Scripts\pyinstaller.exe VoiceTyper.spec
+python build.py
 ```
 
-Готовое приложение — в `dist\VoiceTyper\`.
+Скрипт закрывает работающее приложение — иначе PyInstaller не перезапишет
+занятый `.exe`, — собирает и поднимает его обратно. `--yes` пропускает вопрос,
+`--no-run` оставляет приложение закрытым.
+
+Готовое приложение — в `dist\VoiceTyper\`; под капотом всё та же команда
+`venv\Scripts\pyinstaller.exe VoiceTyper.spec`.
+
+Номер версии — `APP_VERSION` в `src/config.py`, он же виден в подсказке трея и
+в каждой записи журнала. Что менялось — в [CHANGELOG.md](CHANGELOG.md).
 
 ## Как устроено
 

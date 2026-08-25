@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 
 import requests
 
@@ -19,14 +20,37 @@ _PREAMBLES = (
     "вот результат:",
     "результат:",
     "чистовик:",
+    "выход:",
+    "вход:",
 )
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 
+@dataclass
+class Polished:
+    """Правка вместе с тем, что о ней стоит знать журналу."""
+
+    text: str
+    response: str
+    """Ответ до снятия обёрток: по нему видно, что модель приписала от себя."""
+
+    took_s: float
+    output_tokens: int = 0
+    gen_s: float = 0.0
+    """Время самой генерации — по нему считаются ток/с, не завися от очереди."""
+
+    accepted: bool = True
+
+
 class LLMUnavailable(RuntimeError):
-    """Ollama не отвечает — работаем на сыром тексте Whisper."""
+    """Ollama не отвечает или ответила не по делу — работаем на сыром Whisper."""
+
+    def __init__(self, message: str, polished: Polished | None = None) -> None:
+        super().__init__(message)
+        self.polished = polished
+        """Отклонённый ответ, если он был: журналу нужен и он."""
 
 
 class OllamaClient:
@@ -85,14 +109,20 @@ class OllamaClient:
 
     # ---------- основная работа ----------
 
+    def skip_reason(self, raw_text: str) -> str:
+        """Почему правку пропускаем. Пустая строка — не пропускаем."""
+        if not self.cfg.enabled:
+            return "правка выключена"
+        if len(_WORD.findall(raw_text)) < self.cfg.min_words:
+            return f"короче {self.cfg.min_words} слов"
+        return ""
+
     def should_skip(self, raw_text: str) -> bool:
         """Короткие реплики не стоят похода в модель."""
-        if not self.cfg.enabled:
-            return True
-        return len(_WORD.findall(raw_text)) < self.cfg.min_words
+        return bool(self.skip_reason(raw_text))
 
-    def polish(self, raw_text: str) -> str:
-        """Возвращает вычищенный текст. Бросает LLMUnavailable при сбое."""
+    def polish(self, raw_text: str) -> Polished:
+        """Возвращает правку с таймингами. Бросает LLMUnavailable при сбое."""
         prompt = self._build_prompt(raw_text)
         payload = {
             "model": self.cfg.model,
@@ -106,6 +136,10 @@ class OllamaClient:
                 "num_predict": min(512, max(64, len(raw_text) // 2 + 32)),
                 "num_ctx": self.cfg.num_ctx,
             },
+            # Модель иногда дописывает к готовому ответу собственную разметку и
+            # начинает текст заново — на реальной диктовке так потерялось две
+            # трети фразы. Обрываем ровно на этих словах.
+            "stop": ["Input text:", "Cleaned output text:", "\nВход:", "\nВыход:"],
         }
 
         started = time.monotonic()
@@ -122,21 +156,30 @@ class OllamaClient:
             raise LLMUnavailable(self.last_error)
 
         try:
-            result = response.json().get("response", "")
+            body = response.json()
         except ValueError as exc:
             self.last_error = "Ollama вернула некорректный JSON"
             raise LLMUnavailable(self.last_error) from exc
 
+        result = body.get("response", "")
         cleaned = _sanitize(result)
         took = time.monotonic() - started
+        polished = Polished(
+            text=cleaned,
+            response=result,
+            took_s=took,
+            output_tokens=int(body.get("eval_count", 0)),
+            gen_s=float(body.get("eval_duration", 0)) / 1e9,
+        )
         print(f"[llm] за {took:.1f} с: «{cleaned}»")
 
         if not _looks_sane(cleaned, raw_text):
+            polished.accepted = False
             self.last_error = "модель ответила не по делу"
-            raise LLMUnavailable(self.last_error)
+            raise LLMUnavailable(self.last_error, polished)
 
         self.last_error = None
-        return cleaned
+        return polished
 
     def _build_prompt(self, raw_text: str) -> str:
         # Системная часть неизменна от запроса к запросу, поэтому Ollama

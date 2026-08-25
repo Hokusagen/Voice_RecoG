@@ -104,6 +104,7 @@ class Tray(QSystemTrayIcon):
     mode_changed = Signal(str)
     history_picked = Signal(str)
     config_requested = Signal()
+    journal_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, cfg, hotkeys_cfg) -> None:
@@ -162,6 +163,10 @@ class Tray(QSystemTrayIcon):
         open_config = QAction("Открыть настройки", menu)
         open_config.triggered.connect(self.config_requested)
         menu.addAction(open_config)
+
+        open_journal = QAction("Открыть журнал диктовок", menu)
+        open_journal.triggered.connect(self.journal_requested)
+        menu.addAction(open_journal)
 
         menu.addSeparator()
         quit_action = QAction("Выход", menu)

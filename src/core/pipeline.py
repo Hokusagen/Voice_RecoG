@@ -16,7 +16,9 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from core.llm import LLMUnavailable, OllamaClient
+from core import journal
+from core.journal import Journal, Record
+from core.llm import LLMUnavailable, OllamaClient, Polished
 from core.paster import ClipboardError, Paster
 from core.state import Stage, Status
 from core.stt import WhisperEngine
@@ -53,6 +55,7 @@ class Pipeline(QObject):
         paster: Paster,
         sounds,
         sample_rate: int,
+        journal_log: Journal | None = None,
     ) -> None:
         super().__init__()
         self._whisper = whisper
@@ -60,6 +63,7 @@ class Pipeline(QObject):
         self._paster = paster
         self._sounds = sounds
         self._sample_rate = sample_rate
+        self._journal = journal_log or Journal(enabled=False)
 
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -149,10 +153,18 @@ class Pipeline(QObject):
     def _process(self, job: Job) -> None:
         seconds = len(job.audio) / self._sample_rate
         started = time.monotonic()
+        record = Record(at=journal.now(), audio_s=round(seconds, 2), hotkey=job.hotkey)
 
         self._emit(Stage.TRANSCRIBING, "Распознаю", f"{seconds:.1f} с записи")
+        heard = time.monotonic()
         raw_text = self._whisper.transcribe(job.audio)
+        record.whisper_s = round(time.monotonic() - heard, 2)
+        record.raw = raw_text
+        record.raw_words = len(raw_text.split())
+
         if not raw_text:
+            record.skipped = "Whisper ничего не разобрал"
+            self._close(record, started)
             self._emit(Stage.WARNING, "Ничего не разобрал", "попробуйте сказать чётче")
             self._sounds.play("error")
             return
@@ -161,29 +173,60 @@ class Pipeline(QObject):
         text = raw_text
         warning: str | None = None
 
-        if job.polish and not self._llm.should_skip(raw_text):
+        record.skipped = "сырой режим" if not job.polish else self._llm.skip_reason(raw_text)
+        if not record.skipped:
+            record.llm_model = self._llm.cfg.model
             self._emit(Stage.POLISHING, "Причёсываю", self._llm.cfg.model)
             try:
-                text = self._llm.polish(raw_text)
+                polished = self._llm.polish(raw_text)
             except LLMUnavailable as exc:
                 warning = str(exc)
-                text = raw_text
+                record.error = warning
+                # Отклонённый ответ журналу нужен не меньше принятого: по нему
+                # видно, на чём именно модель срывается.
+                _note(record, exc.polished)
+            else:
+                text = polished.text
+                _note(record, polished)
 
         try:
             self._paster.paste(text, hotkey=job.hotkey)
         except ClipboardError as exc:
+            record.error = str(exc)
+            self._close(record, started)
             self._emit(Stage.ERROR, "Не смог вставить", str(exc))
             self._sounds.play("error")
             return
 
-        self.transcribed.emit(text)
-        took = time.monotonic() - started
+        record.final = text
+        record.changed_words = journal.count_changes(raw_text, text)
+        took = self._close(record, started)
 
+        self.transcribed.emit(text)
         self._sounds.play("success")
         if warning:
             self._emit(Stage.WARNING, f"Вставил как есть · {warning}", text)
         else:
             self._emit(Stage.DONE, f"Готово за {took:.1f} с", text)
 
+    def _close(self, record: Record, started: float) -> float:
+        """Дописывает длительность и отправляет запись в журнал."""
+        took = time.monotonic() - started
+        record.total_s = round(took, 2)
+        self._journal.write(record)
+        return took
+
     def _emit(self, stage: Stage, title: str = "", detail: str = "") -> None:
         self.status.emit(Status(stage=stage, title=title, detail=detail))
+
+
+def _note(record: Record, polished: Polished | None) -> None:
+    """Переносит в запись то, что модель рассказала о себе."""
+    if polished is None:
+        return
+    record.llm_s = round(polished.took_s, 2)
+    record.output_tokens = polished.output_tokens
+    record.gen_s = round(polished.gen_s, 3)
+    record.response = polished.response
+    record.polished = polished.text
+    record.accepted = polished.accepted

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
-from config import CONFIG_PATH, Config
+from config import APP_VERSION, CONFIG_PATH, Config
 from core import autostart
 from core.audio import AudioError, AudioRecorder
 from core.history import History
+from core.journal import Journal
 from core.hotkeys import HotkeyListener
 from core.llm import OllamaClient
 from core.paster import Paster, write_text
@@ -36,6 +38,7 @@ class Controller(QObject):
         self.paster = Paster(cfg.paste)
         self.sounds = SoundBoard(enabled=cfg.ui.sounds, volume=cfg.ui.volume)
         self.history = History(cfg.ui.history_size)
+        self.journal = Journal(cfg.llm.journal, cfg.llm.journal_max_mb)
 
         self.hud = Hud(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
@@ -44,7 +47,8 @@ class Controller(QObject):
         self.hotkeys = HotkeyListener(cfg.hotkeys)
 
         self.pipeline = Pipeline(
-            self.whisper, self.llm, self.paster, self.sounds, cfg.audio.sample_rate
+            self.whisper, self.llm, self.paster, self.sounds, cfg.audio.sample_rate,
+            journal_log=self.journal,
         )
 
         self._action: str | None = None
@@ -81,6 +85,7 @@ class Controller(QObject):
         self.tray.mode_changed.connect(self._on_mode)
         self.tray.history_picked.connect(self._on_history_pick)
         self.tray.config_requested.connect(self._on_open_config)
+        self.tray.journal_requested.connect(self._on_open_journal)
         self.tray.quit_requested.connect(self.shutdown)
 
     # ---------- запуск и остановка ----------
@@ -88,7 +93,7 @@ class Controller(QObject):
     def start(self) -> None:
         self.tray.set_autostart_checked(autostart.is_enabled())
         self.tray.set_history(self.history)
-        self.tray.setToolTip(f"Голосовой ввод · {self.cfg.hotkeys.record.upper()}")
+        self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}")
         self.tray.show()
 
         self.pipeline.start()
@@ -200,7 +205,7 @@ class Controller(QObject):
         self._ready = True
         summary = f"{self.cfg.whisper.model} · {where}"
         self.tray.set_summary(summary)
-        self.tray.setToolTip(f"Голосовой ввод · {self.cfg.hotkeys.record.upper()}\n{summary}")
+        self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}\n{summary}")
         self.sounds.play("ready")
         self._show(Stage.DONE, "Готов к работе", f"зажмите {self.cfg.hotkeys.record.upper()}")
 
@@ -262,6 +267,18 @@ class Controller(QObject):
             os.startfile(CONFIG_PATH)
         except OSError as exc:
             self._show(Stage.ERROR, "Не открылся конфиг", str(exc))
+
+    @Slot()
+    def _on_open_journal(self) -> None:
+        """Показывает журнал в проводнике: .jsonl открывать нечем, папку — есть чем."""
+        path = self.journal.path
+        try:
+            if path.exists():
+                subprocess.Popen(["explorer", f"/select,{path}"])
+            else:
+                os.startfile(path.parent)
+        except OSError as exc:
+            self._show(Stage.ERROR, "Не открылся журнал", str(exc))
 
     # ---------- отрисовка ----------
 
