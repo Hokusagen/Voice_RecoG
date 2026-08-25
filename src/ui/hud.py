@@ -41,7 +41,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from config import UIConfig
 from core.state import Stage, Status
-from ui import glass, indicators, theme
+from ui import glass, indicators, live, theme
 from ui.liquid import Backdrop
 from ui.shadow import pill_shadow, shadow_padding
 
@@ -76,6 +76,9 @@ class Hud(QWidget):
         self._bars = [0.0] * _BARS
         self._backdrop: Backdrop | None = None
         self._material = theme.DARK_MATERIAL
+        # Живое стекло: фоновый поток пересобирает размытие из свежего снимка
+        # экрана. None — прежний режим с одним снимком при появлении.
+        self._live = live.LiveEngine() if cfg.liquid_live and live.available() else None
 
         self._title_font = theme.title_font()
         self._detail_font = theme.detail_font()
@@ -105,7 +108,14 @@ class Hud(QWidget):
             | Qt.WindowTransparentForInput
             | Qt.WindowDoesNotAcceptFocus
         )
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        if self._live is None:
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+        else:
+            # Живой режим: Windows отказывается исключать из захвата окна с
+            # попиксельной прозрачностью, поэтому окно непрозрачно, а всё
+            # вокруг пилюли закрашивается снимком рабочего стола.
+            self.setAttribute(Qt.WA_NoSystemBackground, True)
+            self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
@@ -146,6 +156,12 @@ class Hud(QWidget):
             gwl_exstyle,
             style | ws_ex_transparent | ws_ex_toolwindow | ws_ex_layered | ws_ex_noactivate,
         )
+
+        if self._live is not None and not live.exclude_from_capture(int(self.winId())):
+            # Без исключения из захвата живой цикл снимал бы сам себя.
+            print("[live] окно не исключилось из захвата — живое стекло выключено")
+            self._live.stop()
+            self._live = None
 
     def _setup_animations(self) -> None:
         self._reveal_anim = self._make_anim(b"reveal", theme.REVEAL_MS, QEasingCurve.OutCubic)
@@ -262,6 +278,8 @@ class Hud(QWidget):
 
         self.show()
         self._apply_click_through()
+        if self._live is not None:
+            self._live.start()
         self._frames.start()
         self._reveal_anim.stop()
         self._reveal_anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -271,13 +289,24 @@ class Hud(QWidget):
     def _grab_backdrop(self) -> None:
         """Снимает фон под самой широкой плашкой — сузиться она сможет и потом."""
         pill = self._pill_rect(reveal=1.0, width=theme.PILL_MAX_WIDTH * self._scale)
-        region = QRect(
-            self.x() + int(pill.left()),
-            self.y() + int(pill.top()),
-            int(pill.width()),
-            int(pill.height()),
-        )
-        self._backdrop = glass.capture(region)
+        if self._live is not None:
+            # Живой режим: первый кадр целиком, пока окно скрыто. Дальше фон
+            # обновляет фоновый поток, а этот Backdrop нужен для выбора
+            # материала и как стекло на самые первые кадры появления.
+            self._backdrop = self._live.seed(
+                self.geometry(),
+                (pill.center().x(), pill.center().y()),
+                (int(pill.width()), int(pill.height())),
+                None,
+            )
+        else:
+            region = QRect(
+                self.x() + int(pill.left()),
+                self.y() + int(pill.top()),
+                int(pill.width()),
+                int(pill.height()),
+            )
+            self._backdrop = glass.capture(region)
         self._material = theme.material(
             self._backdrop.luminance if self._backdrop is not None else None
         )
@@ -286,6 +315,13 @@ class Hud(QWidget):
         if self._reveal <= 0.01:
             self._frames.stop()
             self.hide()
+
+    def hideEvent(self, event) -> None:
+        # Единственная точка останова живого цикла: сюда приводят и штатное
+        # исчезновение, и прямой hide() снаружи (демо пересоздаёт плашку).
+        if self._live is not None:
+            self._live.stop()
+        super().hideEvent(event)
 
     @staticmethod
     def _restart(animation: QPropertyAnimation, start: float, end: float) -> None:
@@ -331,6 +367,17 @@ class Hud(QWidget):
         level, _elapsed = self._telemetry()
         self._levels.appendleft(_loudness(level) if self._status.stage is Stage.LISTENING else 0.0)
         self._settle_bars()
+
+        if self._live is not None and self.isVisible():
+            # Фоновому потоку — актуальная геометрия: ширина и центр пилюли
+            # меняются анимациями каждый кадр.
+            pill = self._pill_rect()
+            self._live.set_inputs(
+                self.geometry(),
+                (pill.center().x(), pill.center().y()),
+                (max(8, round(pill.width() / 8) * 8), max(8, round(pill.height()))),
+                self._material,
+            )
         self.update()
 
     def _settle_bars(self) -> None:
@@ -345,13 +392,26 @@ class Hud(QWidget):
     # ---------- отрисовка ----------
 
     def paintEvent(self, _event) -> None:
-        if self._reveal <= 0.005:
+        if self._live is None and self._reveal <= 0.005:
             return
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        if self._live is not None:
+            # Непрозрачное окно обязано закрасить каждый свой пиксель, причём
+            # фон — в полную силу: прозрачность появления касается только
+            # пилюли, иначе на время анимации темнел бы весь прямоугольник.
+            background, _glass_image, _size = self._live.latest()
+            if background is not None:
+                painter.drawImage(0, 0, background)
+            else:
+                painter.fillRect(self.rect(), Qt.black)
+            if self._reveal <= 0.005:
+                return
+
         painter.setOpacity(theme.clamp(self._reveal))
 
         pill = self._pill_rect()
@@ -419,6 +479,14 @@ class Hud(QWidget):
 
     def _paint_liquid(self, painter: QPainter, pill: QRectF) -> bool:
         """Выводит заранее собранное стекло. False — если его нет."""
+        if self._live is not None:
+            _background, image, _size = self._live.latest()
+            if image is not None:
+                painter.drawImage(pill, image, QRectF(image.rect()))
+                return True
+            # Фоновый поток ещё не выдал первый кадр — на пару кадров
+            # появления хватает статичного стекла из снимка-затравки.
+
         if self._backdrop is None:
             return False
 
