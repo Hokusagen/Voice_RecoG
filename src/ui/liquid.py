@@ -36,13 +36,6 @@ from ui.theme import Material
 #: Запас вокруг плашки: из него берутся пиксели, которые кромка втягивает внутрь.
 MARGIN = 44
 
-_THICK_BLUR = 6
-"""Размытие середины — там стекло толстое.
-
-Сильнее — и фон превращается в ровное пятно: стекло перестаёт читаться как
-стекло, потому что сквозь него уже нечего узнавать.
-"""
-
 _THIN_BLUR = 2
 """Размытие кромки — она тоньше и почти не рассеивает."""
 
@@ -56,14 +49,54 @@ _EDGE = 15.0
 """Ширина скошенной кромки, пикселей."""
 
 
-def _blur_rgb(source: np.ndarray, radius: int) -> np.ndarray:
-    out = np.empty_like(source)
-    step = max(1, radius // 3)
+def _blur_thick(source: np.ndarray) -> np.ndarray:
+    """Сильное размытие середины — там стекло толстое.
+
+    Сила подобрана под прежний квази-гауссиан с радиусом 6: сильнее — и фон
+    превращается в ровное пятно, стекло перестаёт читаться как стекло, потому
+    что сквозь него уже нечего узнавать.
+
+    Считается на половинном разрешении: стоимость box-фильтра определяется
+    числом проходов, а не радиусом, поэтому экономит не радиус, а площадь —
+    вчетверо меньше пикселей. Ступенчатый апскейл через repeat под таким
+    размытием не читается.
+    """
+    height, width = source.shape[:2]
+    half_h, half_w = height // 2, width // 2
+    even = source[: half_h * 2, : half_w * 2]
+    half = (
+        even[0::2, 0::2] + even[1::2, 0::2] + even[0::2, 1::2] + even[1::2, 1::2]
+    ) * np.float32(0.25)
+
+    blurred = np.empty_like(half)
     for channel in range(3):
-        values = source[..., channel]
-        for _ in range(3):
-            values = box_blur(values, step, mode="edge")
-        out[..., channel] = values
+        values = half[..., channel]
+        for _ in range(2):
+            values = box_blur(values, 1, mode="edge")
+        blurred[..., channel] = values
+
+    out = np.empty_like(source)
+    out[0 : half_h * 2 : 2, 0 : half_w * 2 : 2] = blurred
+    out[1 : half_h * 2 : 2, 0 : half_w * 2 : 2] = blurred
+    out[0 : half_h * 2 : 2, 1 : half_w * 2 : 2] = blurred
+    out[1 : half_h * 2 : 2, 1 : half_w * 2 : 2] = blurred
+    if half_h * 2 != height:
+        out[-1] = out[-2]
+    if half_w * 2 != width:
+        out[:, -1] = out[:, -2]
+    return out
+
+
+def _blur_thin(source: np.ndarray) -> np.ndarray:
+    """Лёгкое размытие кромки: один проход box-фильтра того же сигма.
+
+    Кромку видно в упор, поэтому разрешение не трогаем; вместо трёх проходов —
+    один с полным радиусом: разница между box и квази-гауссианом на радиусе 2
+    неразличима, а стоит втрое дешевле.
+    """
+    out = np.empty_like(source)
+    for channel in range(3):
+        out[..., channel] = box_blur(source[..., channel], _THIN_BLUR, mode="edge")
     return out
 
 
@@ -81,8 +114,10 @@ class _Sampler:
 
     Координаты выборки зависят только от геометрии пилюли, поэтому четыре
     целочисленных соседа и дробные веса считаются один раз. На кадр остаются
-    четыре gather-а и три лерпа — арифметика повторяет прежнюю поэлементную
-    билинейную выборку бит в бит, включая продвижение весов в float64.
+    четыре gather-а и три лерпа. Веса держим во float32: NumPy 2 при вычитании
+    int32 из float32 раздувает результат до double, и весь конвейер после
+    этого работал бы в двойной точности — вдвое больше трафика памяти ради
+    разницы меньше одной градации яркости.
     """
 
     __slots__ = ("_i00", "_i10", "_fx", "_ofx", "_fy", "_ofy")
@@ -92,8 +127,8 @@ class _Sampler:
         y = np.clip(y, 0.0, source_h - 1.001)
         x0 = x.astype(np.int32)
         y0 = y.astype(np.int32)
-        self._fx = x - x0
-        self._fy = y - y0
+        self._fx = x - x0.astype(np.float32)
+        self._fy = y - y0.astype(np.float32)
         self._ofx = 1.0 - self._fx
         self._ofy = 1.0 - self._fy
         self._i00 = y0 * source_w + x0
@@ -239,8 +274,8 @@ class Backdrop:
 
     def __init__(self, raw: np.ndarray) -> None:
         self._raw = raw
-        self._thick = _blur_rgb(raw, _THICK_BLUR)
-        self._thin = _blur_rgb(raw, _THIN_BLUR)
+        self._thick = _blur_thick(raw)
+        self._thin = _blur_thin(raw)
         self._cache: dict[tuple[int, int, int], QPixmap] = {}
 
     @cached_property
@@ -275,9 +310,7 @@ class Backdrop:
 
         if geometry.thick_offset is not None:
             top, left = geometry.thick_offset
-            # float64 повторяет прежнюю билинейную выборку: там веса раздували
-            # результат до double, и смешивание с кромкой шло в нём же.
-            thick = self._thick[top : top + height, left : left + width].astype(np.float64)
+            thick = self._thick[top : top + height, left : left + width]
         else:
             flat_thick = self._thick.reshape(-1, 3)
             thick = np.stack(
