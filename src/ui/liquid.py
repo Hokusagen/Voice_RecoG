@@ -244,13 +244,19 @@ def _geometry(width: int, height: int, source_w: int, source_h: int) -> _Geometr
     return cached
 
 
+def _material_key(glass: Material) -> tuple:
+    """Ключ кэша по цветам, а не по id: живой режим на переходах между тёмным
+    и светлым стеклом создаёт временные смеси, чей id нельзя запоминать."""
+    return (glass.scrim_top.rgba(), glass.scrim_bottom.rgba(), glass.accent_darken)
+
+
 #: Тонировочные таблицы зависят только от высоты пилюли и материала.
-_tint_cache: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+_tint_cache: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
 
 
 def _tint_tables(glass: Material, height: int) -> tuple[np.ndarray, np.ndarray]:
     """Вертикальный градиент тонировки: (1 - альфа) и уже умноженный цвет."""
-    key = (height, id(glass))
+    key = (height, *_material_key(glass))
     cached = _tint_cache.get(key)
     if cached is None:
         ramp = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None, None]
@@ -288,7 +294,7 @@ class Backdrop:
 
     def render(self, width: int, height: int, glass: Material) -> QPixmap | None:
         """Готовое стекло размером width x height. Считается один раз на размер."""
-        key = (width, height, id(glass))
+        key = (width, height, *_material_key(glass))
         cached = self._cache.get(key)
         if cached is None:
             image = self.build_image(width, height, glass)
@@ -330,7 +336,9 @@ class Backdrop:
         color = _saturate(color, 1.22)
         one_minus_alpha, tint_add = _tint_tables(glass, height)
         color = color * one_minus_alpha + tint_add
-        strength = 118.0 if glass.accent_darken else 96.0
+        # 96 у тёмного стекла, 118 у светлого; линейно между ними, чтобы блик
+        # не прыгал на переходах живого материала.
+        strength = 96.0 + glass.accent_darken * 100.0
         color = color + geometry.highlight * strength
         color = color * geometry.shade_mult
 

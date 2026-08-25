@@ -7,7 +7,12 @@
 Чтобы окно не попадало в собственный снимок, оно исключается из захвата
 (SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE). Windows отказывается
 исключать окна с попиксельной прозрачностью, поэтому живой HUD непрозрачен и
-рисует «прозрачность» сам: подкладывает захваченный фон под пилюлю и тень.
+рисует «прозрачность» сам — но только под самой пилюлей: окно обрезано маской
+по её контуру, и подложенная копия рабочего стола прячется за размытым
+стеклом. Копия отстаёт от настоящего стола на кадр-два, поэтому показывать её
+на открытых участках нельзя — при прокрутке она рвёт изображение; тень по той
+же причине живёт в отдельном полупрозрачном окне, которое компонует сама
+Windows (см. hud._ShadowWindow).
 
 Захват — два бэкенда по убыванию скорости:
 
@@ -39,7 +44,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from ui.liquid import MARGIN, Backdrop
+from ui.liquid import Backdrop, _material_key
 from ui.theme import Material
 
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -279,32 +284,25 @@ def _make_grabber():
 
 def build_frame(
     raw: np.ndarray,
-    pill_center: tuple[float, float],
     glass_size: tuple[int, int],
-    glass: Material,
+    glass: Material | None,
 ) -> tuple[QImage, Backdrop, QImage | None]:
-    """Из сырого снимка окна — фон для подкладки, Backdrop и готовое стекло.
+    """Из снимка полосы «пилюля + MARGIN» — фон-подкладка, Backdrop и стекло.
 
-    raw — BGRA-пиксели всего прямоугольника окна; пилюля задана центром в его
-    координатах. Снимок для стекла вырезается с запасом MARGIN вокруг пилюли,
-    так что пилюля оказывается в его центре — как того ждёт сборка.
+    Полоса снимается с центром на пилюле, так что пилюля оказывается в центре
+    источника — как того ждёт сборка стекла. Та же полоса подкладывается под
+    пилюлю в окне: за пределы маски окна она не выходит.
     """
     height, width = raw.shape[:2]
-    background = QImage(raw.data, width, height, width * 4, QImage.Format_RGB32).copy()
+    strip = QImage(raw.data, width, height, width * 4, QImage.Format_RGB32).copy()
 
-    glass_w, glass_h = glass_size
-    crop_w, crop_h = glass_w + 2 * MARGIN, glass_h + 2 * MARGIN
-    left = round(pill_center[0] - crop_w / 2.0)
-    top = round(pill_center[1] - crop_h / 2.0)
-    if left < 0 or top < 0 or left + crop_w > width or top + crop_h > height:
-        return background, None, None
-
-    crop = np.ascontiguousarray(raw[top : top + crop_h, left : left + crop_w, :3], dtype=np.float32)
-    backdrop = Backdrop(crop)
-    image = backdrop.build_image(glass_w, glass_h, glass)
-    if image is not None:
-        image = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-    return background, backdrop, image
+    backdrop = Backdrop(np.ascontiguousarray(raw[..., :3], dtype=np.float32))
+    image = None
+    if glass is not None:
+        image = backdrop.build_image(glass_size[0], glass_size[1], glass)
+        if image is not None:
+            image = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+    return strip, backdrop, image
 
 
 class LiveEngine:
@@ -316,71 +314,60 @@ class LiveEngine:
         self._stop = threading.Event()
         self._inputs: tuple | None = None
         self._background: QImage | None = None
+        self._background_rect: tuple[int, int] | None = None
         self._glass: QImage | None = None
         self._glass_size: tuple[int, int] | None = None
+        self._luminance: float | None = None
         self._seed_grabber: _GdiGrabber | None = None
 
     # -- вызывается из интерфейсного потока --
 
-    def seed(
-        self,
-        window_rect: QRect,
-        pill_center: tuple[float, float],
-        glass_size: tuple[int, int],
-        glass: Material | None,
-    ) -> Backdrop | None:
+    def seed(self, capture_rect: QRect, glass_size: tuple[int, int]) -> Backdrop | None:
         """Синхронный первый кадр до show(): окно ещё скрыто, GDI его не видит.
 
-        Возвращает Backdrop — по его светимости выбирается материал; если
-        материал уже известен, сразу собирает и стекло.
+        Возвращает Backdrop — по его светимости выбирается материал; стекло
+        первых кадров появления рисуется из него же статически, пока фоновый
+        поток не выдаст свой первый кадр.
         """
         if self._seed_grabber is None:
             self._seed_grabber = _GdiGrabber()
         raw = self._seed_grabber.grab(
-            window_rect.x(), window_rect.y(), window_rect.width(), window_rect.height()
+            capture_rect.x(), capture_rect.y(), capture_rect.width(), capture_rect.height()
         )
         if raw is None:
             return None
-        if glass is None:
-            height, width = raw.shape[:2]
-            background = QImage(raw.data, width, height, width * 4, QImage.Format_RGB32).copy()
-            crop_w, crop_h = glass_size[0] + 2 * MARGIN, glass_size[1] + 2 * MARGIN
-            left = round(pill_center[0] - crop_w / 2.0)
-            top = round(pill_center[1] - crop_h / 2.0)
-            if left < 0 or top < 0 or left + crop_w > width or top + crop_h > height:
-                backdrop = None
-            else:
-                crop = np.ascontiguousarray(
-                    raw[top : top + crop_h, left : left + crop_w, :3], dtype=np.float32
-                )
-                backdrop = Backdrop(crop)
-            with self._lock:
-                self._background, self._glass = background, None
-            return backdrop
-        background, backdrop, image = build_frame(raw, pill_center, glass_size, glass)
+        strip, backdrop, _image = build_frame(raw, glass_size, None)
         with self._lock:
-            self._background, self._glass = background, image
-            self._glass_size = glass_size
+            self._background = strip
+            self._background_rect = (capture_rect.x(), capture_rect.y())
+            self._glass = None
+            self._luminance = backdrop.luminance
         return backdrop
 
     def set_inputs(
         self,
-        window_rect: QRect,
-        pill_center: tuple[float, float],
+        capture_rect: QRect,
         glass_size: tuple[int, int],
         glass: Material,
     ) -> None:
         with self._lock:
             self._inputs = (
-                (window_rect.x(), window_rect.y(), window_rect.width(), window_rect.height()),
-                pill_center,
+                (capture_rect.x(), capture_rect.y(), capture_rect.width(), capture_rect.height()),
                 glass_size,
                 glass,
             )
 
-    def latest(self) -> tuple[QImage | None, QImage | None, tuple[int, int] | None]:
+    def latest(
+        self,
+    ) -> tuple[QImage | None, tuple[int, int] | None, QImage | None, tuple[int, int] | None]:
+        """Последний кадр: полоса фона, её глобальный угол, стекло и его размер."""
         with self._lock:
-            return self._background, self._glass, self._glass_size
+            return self._background, self._background_rect, self._glass, self._glass_size
+
+    def luminance(self) -> float | None:
+        """Светимость фона из последнего собранного кадра."""
+        with self._lock:
+            return self._luminance
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -411,8 +398,8 @@ class LiveEngine:
                 if inputs is None:
                     time.sleep(0.008)
                     continue
-                rect, pill_center, glass_size, glass = inputs
-                key = (rect, tuple(round(c) for c in pill_center), glass_size, id(glass))
+                rect, glass_size, glass = inputs
+                key = (rect, glass_size, _material_key(glass))
 
                 started = time.perf_counter()
                 try:
@@ -437,10 +424,12 @@ class LiveEngine:
                 else:
                     last_raw = raw
 
-                background, _backdrop, image = build_frame(raw, pill_center, glass_size, glass)
+                strip, backdrop, image = build_frame(raw, glass_size, glass)
                 last_key = key
                 with self._lock:
-                    self._background = background
+                    self._background = strip
+                    self._background_rect = (rect[0], rect[1])
+                    self._luminance = backdrop.luminance
                     if image is not None:
                         self._glass = image
                         self._glass_size = glass_size
