@@ -146,6 +146,14 @@ class WhisperConfig:
     compute_type: str = "auto"
     """auto -> int8_float16 на CUDA, int8 на CPU."""
 
+    cloud_when_released: bool = True
+    """Пока видеокарта отдана, распознавать в облаке, а не на процессоре.
+
+    Работает только при вставленном cloud.api_key. Облачный Whisper отвечает
+    за секунду-две против пятнадцати на процессоре; если облако не ответило,
+    конвейер сам поднимет локальную модель на CPU.
+    """
+
     cpu_model: str = "large-v3-turbo"
     """Модель на время, пока видеокарта отдана.
 
@@ -164,8 +172,34 @@ class WhisperConfig:
 
 
 @dataclass
+class CloudConfig:
+    """OpenAI-совместимое облако. Пустой ключ — облако выключено.
+
+    По умолчанию Groq: бесплатный тариф без карты, 1000 правок и 8 часов
+    аудио в сутки, на данных не обучают. Ключ берётся на console.groq.com и
+    вставляется в api_key. Подойдёт и любой другой сервер с путями
+    /chat/completions и /audio/transcriptions — достаточно поменять url.
+    """
+
+    url: str = "https://api.groq.com/openai/v1"
+    api_key: str = ""
+    model: str = "openai/gpt-oss-120b"
+    """Редактор. Запасной вариант на Groq: llama-3.3-70b-versatile."""
+
+    whisper_model: str = "whisper-large-v3-turbo"
+    timeout_s: float = 20.0
+
+
+@dataclass
 class LLMConfig:
     enabled: bool = True
+    backend: str = "local"
+    """Где править: local — Ollama на этой машине, cloud — по cloud.api_key.
+
+    Переключается в трее. При выборе облака Ollama не прогревается и не
+    занимает видеопамять; если облако не ответило, правка уходит в Ollama,
+    а если и её нет — вставляется сырой текст с предупреждением.
+    """
     url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
     keep_alive: str = "30m"
@@ -258,6 +292,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     paste: PasteConfig = field(default_factory=PasteConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    cloud: CloudConfig = field(default_factory=CloudConfig)
 
     release_gpu: bool = False
     """Видеокарта отдана другим задачам: Whisper на процессоре, Ollama выгружена.

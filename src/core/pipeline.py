@@ -17,6 +17,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from core import journal
+from core.cloud import CloudClient, CloudUnavailable
 from core.journal import Journal, Record
 from core.llm import LLMUnavailable, OllamaClient, Polished
 from core.paster import ClipboardError, Paster
@@ -70,9 +71,11 @@ class Pipeline(QObject):
         sample_rate: int,
         journal_log: Journal | None = None,
         release_gpu: bool = False,
+        cloud: CloudClient | None = None,
     ) -> None:
         super().__init__()
         self._release_gpu = release_gpu
+        self._cloud = cloud
         self._whisper = whisper
         self._llm = llm
         self._paster = paster
@@ -143,19 +146,43 @@ class Pipeline(QObject):
 
     def _bring_up(self) -> bool:
         """Поднимает Whisper на нужном устройстве и Ollama, шлёт ready."""
-        try:
-            where = self._whisper.load(self._whisper_device())
-        except Exception as exc:
-            self._emit(Stage.ERROR, "Whisper не запустился", str(exc))
-            self.failed.emit(str(exc))
-            return False
-
-        self._emit(Stage.LOADING, "Прогреваю модель", where)
-        self._whisper.warmup()
+        if self._cloud_whisper:
+            # Локальную модель не грузим вовсе: на процессоре она занимает
+            # полторы гигабайта памяти, которой и так впритык. Поднимется
+            # сама, если облако подведёт.
+            self._whisper.unload()
+            where = f"облако · {self._cloud.cfg.whisper_model}"
+        else:
+            try:
+                where = self._whisper.load(self._whisper_device())
+            except Exception as exc:
+                self._emit(Stage.ERROR, "Whisper не запустился", str(exc))
+                self.failed.emit(str(exc))
+                return False
+            self._emit(Stage.LOADING, "Прогреваю модель", where)
+            self._whisper.warmup()
 
         self.ready.emit(f"{where} · {self._prepare_llm()}")
         self._emit(Stage.IDLE)
         return True
+
+    @property
+    def _cloud_whisper(self) -> bool:
+        """Распознавать в облаке: видеокарта отдана, ключ есть, так настроено."""
+        return bool(
+            self._release_gpu
+            and self._cloud is not None
+            and self._cloud.configured
+            and self._whisper.cfg.cloud_when_released
+        )
+
+    @property
+    def _cloud_llm(self) -> bool:
+        return bool(
+            self._llm.cfg.backend == "cloud"
+            and self._cloud is not None
+            and self._cloud.configured
+        )
 
     def _whisper_device(self) -> str | None:
         """None — как в настройках; «cpu» — пока видеокарта отдана."""
@@ -175,7 +202,8 @@ class Pipeline(QObject):
             self._emit(Stage.LOADING, "Отдаю видеокарту", "выгружаю редактор")
             if self._llm.cfg.enabled:
                 self._llm.unload()
-            self._emit(Stage.LOADING, "Отдаю видеокарту", "Whisper переезжает на процессор")
+            where = "в облако" if self._cloud_whisper else "на процессор"
+            self._emit(Stage.LOADING, "Отдаю видеокарту", f"Whisper переезжает {where}")
         else:
             self._emit(Stage.LOADING, "Забираю видеокарту", "Whisper возвращается на CUDA")
         self._bring_up()
@@ -188,6 +216,10 @@ class Pipeline(QObject):
         """
         if not self._llm.cfg.enabled:
             return "без правки"
+        if self._cloud_llm:
+            # Ollama не трогаем: пока правит облако, её 2 ГБ видеопамяти
+            # свободны. Если облако подведёт, Ollama поднимется сама.
+            return self._cloud.label
         if self._release_gpu:
             return "видеокарта отдана, без правки"
 
@@ -211,7 +243,7 @@ class Pipeline(QObject):
 
         self._emit(Stage.TRANSCRIBING, "Распознаю", f"{seconds:.1f} с записи")
         heard = time.monotonic()
-        raw_text = self._whisper.transcribe(job.audio)
+        raw_text = self._transcribe(job.audio, record)
         record.whisper_s = round(time.monotonic() - heard, 2)
         record.raw = raw_text
         record.raw_words = len(raw_text.split())
@@ -229,19 +261,17 @@ class Pipeline(QObject):
 
         if job.style is None:
             record.skipped = "сырой режим"
-        elif self._release_gpu:
+        elif self._release_gpu and not self._cloud_llm:
             # Гонять 3b-модель на процессоре — это десятки секунд на фразу;
             # пока видеокарта отдана, честнее вставлять текст как есть.
             record.skipped = "видеокарта отдана"
         else:
             record.skipped = self._llm.skip_reason(raw_text)
         if not record.skipped:
-            record.llm_model = self._llm.cfg.model
             record.style = job.style or ""
             verb = "Сушу" if job.style == "dry" else "Причёсываю"
-            self._emit(Stage.POLISHING, verb, self._llm.cfg.model)
             try:
-                polished = self._llm.polish(raw_text, job.style or "careful")
+                polished = self._polish(raw_text, job.style or "careful", verb, record)
             except LLMUnavailable as exc:
                 warning = str(exc)
                 record.error = warning
@@ -271,6 +301,41 @@ class Pipeline(QObject):
             self._emit(Stage.WARNING, f"Вставил как есть · {warning}", text)
         else:
             self._emit(Stage.DONE, f"Готово за {took:.1f} с", text)
+
+    def _transcribe(self, audio: np.ndarray, record: Record) -> str:
+        """Whisper в облаке, если видеокарта отдана, иначе локальный."""
+        if self._cloud_whisper:
+            cfg = self._whisper.cfg
+            try:
+                text = self._cloud.transcribe(
+                    audio, self._sample_rate, cfg.language, cfg.initial_prompt
+                )
+                record.stt = self._cloud.cfg.whisper_model
+                return text
+            except CloudUnavailable as exc:
+                print(f"[pipeline] облачный Whisper не ответил: {exc}; поднимаю локальный")
+                record.error = str(exc)
+        if not self._whisper.is_loaded:
+            self._emit(Stage.LOADING, "Поднимаю Whisper", "облако не ответило")
+            self._whisper.load(self._whisper_device())
+        record.stt = f"{self._whisper.model_name} · {self._whisper.device}"
+        return self._whisper.transcribe(audio)
+
+    def _polish(self, raw_text: str, style: str, verb: str, record: Record) -> Polished:
+        """Правка облаком с откатом на Ollama — или сразу Ollama."""
+        if self._cloud_llm:
+            record.llm_model = self._cloud.label
+            self._emit(Stage.POLISHING, verb, self._cloud.cfg.model)
+            try:
+                return self._cloud.polish(raw_text, style)
+            except LLMUnavailable as exc:
+                if self._release_gpu or not self._llm.cfg.enabled:
+                    raise
+                print(f"[pipeline] {exc}; пробую Ollama")
+                _note(record, exc.polished)
+        record.llm_model = self._llm.cfg.model
+        self._emit(Stage.POLISHING, verb, self._llm.cfg.model)
+        return self._llm.polish(raw_text, style)
 
     def _close(self, record: Record, started: float) -> float:
         """Дописывает длительность и отправляет запись в журнал."""

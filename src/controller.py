@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 from config import APP_VERSION, CONFIG_PATH, Config
 from core import autostart
 from core.audio import AudioError, AudioRecorder
+from core.cloud import CloudClient
 from core.history import History
 from core.journal import Journal
 from core.hotkeys import HotkeyListener
@@ -35,6 +36,7 @@ class Controller(QObject):
         self.recorder = AudioRecorder(cfg.audio)
         self.whisper = WhisperEngine(cfg.whisper)
         self.llm = OllamaClient(cfg.llm)
+        self.cloud = CloudClient(cfg.cloud, cfg.llm)
         self.paster = Paster(cfg.paste)
         self.sounds = SoundBoard(enabled=cfg.ui.sounds, volume=cfg.ui.volume)
         self.history = History(cfg.ui.history_size)
@@ -48,7 +50,7 @@ class Controller(QObject):
 
         self.pipeline = Pipeline(
             self.whisper, self.llm, self.paster, self.sounds, cfg.audio.sample_rate,
-            journal_log=self.journal, release_gpu=cfg.release_gpu,
+            journal_log=self.journal, release_gpu=cfg.release_gpu, cloud=self.cloud,
         )
 
         self._action: str | None = None
@@ -85,6 +87,7 @@ class Controller(QObject):
         self.tray.autostart_toggled.connect(self._on_autostart)
         self.tray.mode_changed.connect(self._on_mode)
         self.tray.style_changed.connect(self._on_style)
+        self.tray.backend_changed.connect(self._on_backend)
         self.tray.history_picked.connect(self._on_history_pick)
         self.tray.config_requested.connect(self._on_open_config)
         self.tray.journal_requested.connect(self._on_open_journal)
@@ -95,6 +98,8 @@ class Controller(QObject):
     def start(self) -> None:
         self.tray.set_autostart_checked(autostart.is_enabled())
         self.tray.set_gpu_released(self.cfg.release_gpu)
+        if self.cfg.llm.backend == "cloud" and not self.cloud.configured:
+            print("[cloud] выбрано облако, но cloud.api_key пуст — правлю локально")
         self.tray.set_history(self.history)
         self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}")
         self.tray.show()
@@ -282,6 +287,16 @@ class Controller(QObject):
         other = self.cfg.hotkeys.record_alt.upper()
         label = "сухая" if style == "dry" else "бережная"
         self._show(Stage.DONE, f"По {self.cfg.hotkeys.record.upper()} правка {label}", f"другая по {other}")
+
+    @Slot(str)
+    def _on_backend(self, backend: str) -> None:
+        self.cfg.llm.backend = backend
+        self.cfg.save()
+        if backend == "cloud" and not self.cloud.configured:
+            self._show(Stage.WARNING, "Нет ключа облака", "вставьте cloud.api_key в настройки и перезапустите")
+            return
+        label = self.cloud.label if backend == "cloud" else f"Ollama · {self.cfg.llm.model}"
+        self._show(Stage.DONE, "Правка: " + label, "со следующей диктовки")
 
     @Slot(str)
     def _on_mode(self, mode: str) -> None:

@@ -104,6 +104,7 @@ class Tray(QSystemTrayIcon):
     autostart_toggled = Signal(bool)
     mode_changed = Signal(str)
     style_changed = Signal(str)
+    backend_changed = Signal(str)
     history_picked = Signal(str)
     config_requested = Signal()
     journal_requested = Signal()
@@ -166,6 +167,16 @@ class Tray(QSystemTrayIcon):
             action.triggered.connect(lambda _checked, v=value: self.style_changed.emit(v))
             style_group.addAction(action)
             style_menu.addAction(action)
+
+        backend_menu = menu.addMenu("Редактор")
+        backend_group = QActionGroup(backend_menu)
+        backend_group.setExclusive(True)
+        for value, label in (("local", "Локально: Ollama"), ("cloud", "В облаке")):
+            action = QAction(label, backend_menu, checkable=True)
+            action.setChecked(self._llm.backend == value)
+            action.triggered.connect(lambda _checked, v=value: self.backend_changed.emit(v))
+            backend_group.addAction(action)
+            backend_menu.addAction(action)
 
         self._history_menu = menu.addMenu("История")
         self._history_menu.setEnabled(False)
