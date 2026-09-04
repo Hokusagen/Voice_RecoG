@@ -183,8 +183,14 @@ class CloudConfig:
 
     url: str = "https://api.groq.com/openai/v1"
     api_key: str = ""
-    model: str = "openai/gpt-oss-120b"
-    """Редактор. Запасной вариант на Groq: llama-3.3-70b-versatile."""
+    model: str = "qwen/qwen3.8-27b"
+    """Редактор. На прогоне журнала qwen3.8-27b оказалась самой бережной к
+    тексту и самой быстрой (0.2–0.5 с); openai/gpt-oss-120b суше в сухом
+    стиле, но в бережном допускает опечатки в словах.
+
+    Бесплатный тариф даёт 8 тысяч токенов в минуту: это пять-шесть диктовок
+    подряд, дальше облако отвечает «исчерпан лимит» и правка уходит в Ollama.
+    """
 
     whisper_model: str = "whisper-large-v3-turbo"
     timeout_s: float = 20.0
