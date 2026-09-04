@@ -62,6 +62,9 @@ class Pipeline(QObject):
     transcribed = Signal(str)
     """Итоговый текст, который ушёл в активное окно."""
 
+    quota = Signal(str)
+    """Остатки лимитов облака после очередного запроса, строкой для трея."""
+
     def __init__(
         self,
         whisper: WhisperEngine,
@@ -293,6 +296,8 @@ class Pipeline(QObject):
 
         record.final = text
         record.changed_words = journal.count_changes(raw_text, text)
+        if self._cloud is not None and self._cloud.quota.known:
+            record.cloud_quota = self._cloud.quota_line()
         took = self._close(record, started)
 
         self.transcribed.emit(text)
@@ -315,6 +320,8 @@ class Pipeline(QObject):
             except CloudUnavailable as exc:
                 print(f"[pipeline] облачный Whisper не ответил: {exc}; поднимаю локальный")
                 record.error = str(exc)
+            finally:
+                self.quota.emit(self._cloud.quota_line())
         if not self._whisper.is_loaded:
             self._emit(Stage.LOADING, "Поднимаю Whisper", "облако не ответило")
             self._whisper.load(self._whisper_device())
@@ -325,17 +332,39 @@ class Pipeline(QObject):
         """Правка облаком с откатом на Ollama — или сразу Ollama."""
         if self._cloud_llm:
             record.llm_model = self._cloud.label
-            self._emit(Stage.POLISHING, verb, self._cloud.cfg.model)
             try:
-                return self._cloud.polish(raw_text, style)
+                return self._polish_cloud(raw_text, style, verb)
             except LLMUnavailable as exc:
                 if self._release_gpu or not self._llm.cfg.enabled:
                     raise
                 print(f"[pipeline] {exc}; пробую Ollama")
                 _note(record, exc.polished)
+            finally:
+                self.quota.emit(self._cloud.quota_line())
         record.llm_model = self._llm.cfg.model
         self._emit(Stage.POLISHING, verb, self._llm.cfg.model)
         return self._llm.polish(raw_text, style)
+
+    #: Дольше этого минутный лимит не ждём — быстрее ответит Ollama.
+    _MAX_QUOTA_WAIT_S = 6.0
+
+    def _polish_cloud(self, raw_text: str, style: str, verb: str) -> Polished:
+        """Сначала сверяется с лимитами, потом идёт в облако.
+
+        Если минутных токенов на фразу не хватает и сброс близко — ждёт его;
+        если далеко или кончились суточные запросы — сразу отдаёт правку
+        Ollama через LLMUnavailable, не тратя попытку на заведомый отказ.
+        """
+        wait = self._cloud.wait_for_polish(raw_text, style)
+        if wait is None:
+            raise LLMUnavailable("облако: исчерпан суточный лимит")
+        if wait > self._MAX_QUOTA_WAIT_S:
+            raise LLMUnavailable(f"облако: лимит минуты, сброс через {wait:.0f} с")
+        if wait > 0:
+            self._emit(Stage.POLISHING, "Жду лимит облака", f"{wait:.0f} с")
+            time.sleep(wait)
+        self._emit(Stage.POLISHING, verb, self._cloud.cfg.model)
+        return self._cloud.polish(raw_text, style)
 
     def _close(self, record: Record, started: float) -> float:
         """Дописывает длительность и отправляет запись в журнал."""

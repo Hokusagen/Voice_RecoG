@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import io
+import re
 import time
 import wave
+from dataclasses import dataclass, field
 
 import numpy as np
 import requests
@@ -23,12 +25,147 @@ from config import CloudConfig, LLMConfig
 from core.llm import LLMUnavailable, Polished, _looks_sane, _sanitize
 
 
+@dataclass
+class Quota:
+    """Остатки лимитов, как их сообщил сервер в заголовках последнего ответа.
+
+    Groq отдаёт x-ratelimit-*: запросы считаются на сутки, токены — на
+    минуту, и к каждому прилагается время до сброса. По ним можно не ждать
+    отказа 429, а заранее понять, что минутный лимит на эту фразу не хватит.
+    """
+
+    requests_left: int | None = None
+    requests_limit: int | None = None
+    requests_reset_s: float = 0.0
+    tokens_left: int | None = None
+    tokens_limit: int | None = None
+    tokens_reset_s: float = 0.0
+    at: float = field(default_factory=time.monotonic)
+
+    @property
+    def age_s(self) -> float:
+        return time.monotonic() - self.at
+
+    def tokens_now(self) -> int | None:
+        """Сколько токенов в минуте осталось с поправкой на прошедшее время."""
+        if self.tokens_left is None:
+            return None
+        if self.tokens_reset_s and self.age_s >= self.tokens_reset_s:
+            return self.tokens_limit if self.tokens_limit is not None else self.tokens_left
+        return self.tokens_left
+
+    def requests_now(self) -> int | None:
+        if self.requests_left is None:
+            return None
+        if self.requests_reset_s and self.age_s >= self.requests_reset_s:
+            return self.requests_limit if self.requests_limit is not None else self.requests_left
+        return self.requests_left
+
+    @property
+    def known(self) -> bool:
+        return self.requests_left is not None or self.tokens_left is not None
+
+
+def parse_quota(headers) -> Quota:
+    def num(name: str) -> int | None:
+        value = headers.get(name)
+        try:
+            return int(float(value)) if value is not None else None
+        except ValueError:
+            return None
+
+    return Quota(
+        requests_left=num("x-ratelimit-remaining-requests"),
+        requests_limit=num("x-ratelimit-limit-requests"),
+        requests_reset_s=parse_duration(headers.get("x-ratelimit-reset-requests", "")),
+        tokens_left=num("x-ratelimit-remaining-tokens"),
+        tokens_limit=num("x-ratelimit-limit-tokens"),
+        tokens_reset_s=parse_duration(headers.get("x-ratelimit-reset-tokens", "")),
+    )
+
+
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|m(?!s)|s|ms)")
+
+
+def parse_duration(text: str) -> float:
+    """«25m55.199s», «150ms», «1h2m» -> секунды. Голое число тоже секунды."""
+    text = (text or "").strip().lower()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    total = 0.0
+    for value, unit in _DURATION.findall(text):
+        total += float(value) * {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}[unit]
+    return total
+
+
+def _estimate_tokens(*texts: str) -> int:
+    """Русский у этих моделей режется примерно по три символа на токен;
+    берём с запасом, чтобы не влететь в отказ на длинной фразе."""
+    return sum(len(t) for t in texts) // 3 + 128
+
+
 class CloudClient:
     def __init__(self, cfg: CloudConfig, llm_cfg: LLMConfig) -> None:
         self.cfg = cfg
         self.llm_cfg = llm_cfg
         self._session = requests.Session()
         self.last_error: str | None = None
+        self.quota = Quota()
+        """Лимиты редактора (chat/completions)."""
+
+        self.audio_quota = Quota()
+        """Лимиты распознавания (audio/transcriptions): у Groq они отдельные."""
+
+    # ---------- лимиты ----------
+
+    def tokens_needed(self, raw_text: str, style: str = "careful") -> int:
+        system = self.llm_cfg.dry_prompt if style == "dry" else self.llm_cfg.system_prompt
+        return _estimate_tokens(system, raw_text) + _estimate_tokens(raw_text)
+
+    def wait_for_polish(self, raw_text: str, style: str = "careful") -> float | None:
+        """Сколько секунд подождать до правки; 0 — можно сразу; None — лимит суток.
+
+        Считается по последним заголовкам: если минутных токенов на фразу не
+        хватает, возвращает время до их сброса.
+        """
+        quota = self.quota
+        if not quota.known:
+            return 0.0
+        requests_left = quota.requests_now()
+        if requests_left is not None and requests_left <= 0:
+            return None
+        tokens = quota.tokens_now()
+        if tokens is None or tokens >= self.tokens_needed(raw_text, style):
+            return 0.0
+        return max(0.5, quota.tokens_reset_s - quota.age_s)
+
+    def quota_line(self) -> str:
+        """Строка для трея: «облако: 982 из 1000 правок на сегодня · 7.9k ток/мин»."""
+        q = self.quota
+        if not q.known:
+            return ""
+        parts = []
+        if q.requests_left is not None:
+            parts.append(f"{q.requests_now()} из {q.requests_limit} правок на сегодня")
+        if q.tokens_left is not None:
+            parts.append(f"{(q.tokens_now() or 0) / 1000:.1f}k из {(q.tokens_limit or 0) / 1000:.0f}k токенов в минуту")
+        a = self.audio_quota
+        if a.requests_left is not None:
+            parts.append(f"{a.requests_now()} из {a.requests_limit} распознаваний")
+        return "облако: " + " · ".join(parts)
+
+    def _remember(self, response: requests.Response, audio: bool = False) -> None:
+        quota = parse_quota(response.headers)
+        if not quota.known:
+            return
+        if audio:
+            self.audio_quota = quota
+        else:
+            self.quota = quota
 
     # ---------- состояние ----------
 
@@ -82,6 +219,7 @@ class CloudClient:
             self.last_error = _describe(exc)
             raise LLMUnavailable(self.last_error) from exc
 
+        self._remember(response)
         if response.status_code != 200:
             self.last_error = _http_error(response)
             raise LLMUnavailable(self.last_error)
@@ -147,6 +285,7 @@ class CloudClient:
             self.last_error = _describe(exc)
             raise CloudUnavailable(self.last_error) from exc
 
+        self._remember(response, audio=True)
         if response.status_code != 200:
             self.last_error = _http_error(response)
             raise CloudUnavailable(self.last_error)
@@ -178,7 +317,8 @@ def _http_error(response: requests.Response) -> str:
     if code == 401:
         return "облако не приняло ключ"
     if code == 429:
-        return "облако: исчерпан лимит запросов"
+        retry = parse_duration(response.headers.get("retry-after", ""))
+        return "облако: исчерпан лимит" + (f", сброс через {retry:.0f} с" if retry else "")
     try:
         message = response.json()["error"]["message"]
     except (ValueError, KeyError, TypeError):

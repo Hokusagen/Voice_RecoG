@@ -27,6 +27,9 @@ from ui.tray import Tray
 #: Как часто проверять, не пора ли отпустить микрофон.
 _IDLE_CHECK_MS = 15_000
 
+#: При каком остатке суточных запросов облака предупредить один раз.
+_QUOTA_WARN_LEFT = 50
+
 
 class Controller(QObject):
     def __init__(self, cfg: Config) -> None:
@@ -56,6 +59,7 @@ class Controller(QObject):
         self._action: str | None = None
         self._paused = False
         self._ready = False
+        self._quota_warned = False
 
         self._max_duration = QTimer(self)
         self._max_duration.setSingleShot(True)
@@ -80,6 +84,7 @@ class Controller(QObject):
         self.pipeline.ready.connect(self._on_ready)
         self.pipeline.failed.connect(self._on_failed)
         self.pipeline.transcribed.connect(self._on_transcribed)
+        self.pipeline.quota.connect(self._on_quota)
 
         self.tray.pause_toggled.connect(self._on_pause)
         self.tray.gpu_toggled.connect(self._on_release_gpu)
@@ -236,6 +241,14 @@ class Controller(QObject):
         self._ready = False
         self.tray.set_summary("Не запустился")
         self.sounds.play("error")
+
+    @Slot(str)
+    def _on_quota(self, line: str) -> None:
+        self.tray.set_quota(line)
+        left = self.cloud.quota.requests_now()
+        if left is not None and left <= _QUOTA_WARN_LEFT and not self._quota_warned:
+            self._quota_warned = True
+            self._show(Stage.WARNING, f"Облако: осталось {left} правок на сегодня", "дальше правка уйдёт в Ollama")
 
     @Slot(str)
     def _on_transcribed(self, text: str) -> None:

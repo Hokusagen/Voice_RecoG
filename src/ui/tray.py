@@ -135,6 +135,11 @@ class Tray(QSystemTrayIcon):
         self._status_action = QAction("Загружаю…", menu)
         self._status_action.setEnabled(False)
         menu.addAction(self._status_action)
+
+        self._quota_action = QAction("", menu)
+        self._quota_action.setEnabled(False)
+        self._quota_action.setVisible(False)
+        menu.addAction(self._quota_action)
         menu.addSeparator()
 
         self._pause_action = QAction("Пауза", menu, checkable=True)
@@ -229,6 +234,11 @@ class Tray(QSystemTrayIcon):
 
     def set_summary(self, text: str) -> None:
         self._status_action.setText(text)
+
+    def set_quota(self, text: str) -> None:
+        """Остатки лимитов облака; пустая строка прячет пункт."""
+        self._quota_action.setText(text)
+        self._quota_action.setVisible(bool(text))
 
     # ---------- состояние иконки ----------
 
