@@ -25,7 +25,10 @@ def _c(hex_rgb: str, alpha: int = 255) -> QColor:
 
 # ---------- стекло ----------
 
-SHADOW = _c("#000000", 96)
+#: Контактная тень: чуть темнее сразу под кромкой, без серого ореола вокруг.
+#: Прежняя широкая тень жила в отдельном окне и одна попадала в записи
+#: экрана — плашка из захвата исключена, а её тень нет.
+SHADOW = _c("#000000", 60)
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,7 @@ LIGHT_MATERIAL = Material(
     scrim_bottom=_c("#eef0f4", 108),
     sheen=_c("#ffffff", 60),
     edge_top=_c("#ffffff", 224),
-    edge_bottom=_c("#2a3040", 34),
+    edge_bottom=_c("#2a3040", 56),
     title=_c("#0f1219", 248),
     detail=_c("#3c4252", 226),
     text_shadow=_c("#ffffff", 190),
@@ -151,8 +154,8 @@ PADDING_X = 24
 ICON_SIZE = 22
 ICON_GAP = 16
 
-SHADOW_BLUR = 24
-SHADOW_OFFSET_Y = 10
+SHADOW_BLUR = 8
+SHADOW_OFFSET_Y = 3
 
 REVEAL_SLIDE = 22
 

@@ -57,9 +57,9 @@ _BUSY = frozenset({Stage.LOADING, Stage.TRANSCRIBING, Stage.POLISHING})
 #: Стадии с одноразово прорисовываемым значком.
 _RESULT = frozenset({Stage.DONE, Stage.WARNING, Stage.ERROR, Stage.CANCELLED, Stage.PAUSED})
 
-#: Запас маски живого окна вокруг пилюли: свечение кромки рисуется пером в
-#: шесть пикселей по её контуру и выступает наружу на половину толщины.
-_MASK_PAD = 5
+#: Запас маски живого окна вокруг пилюли: в него должны влезть свечение
+#: кромки (перо в шесть пикселей, половина наружу) и контактная тень.
+_MASK_PAD = max(5, shadow_padding(theme.SHADOW_BLUR) + theme.SHADOW_OFFSET_Y)
 
 
 def _win32_click_through(widget: QWidget) -> None:
@@ -97,10 +97,11 @@ def _win32_click_through(widget: QWidget) -> None:
 
 
 def _draw_pill_shadow(painter: QPainter, pill: QRectF) -> None:
-    # Размер округляется до 8 пикселей: под размытием в 20 пикселей разница
-    # не видна, зато кэш не пересчитывает тень на каждом кадре анимации.
+    # Ширина округляется до 8 пикселей: под размытием разница не видна, зато
+    # кэш не пересчитывает тень на каждом кадре анимации. Высоту не трогаем:
+    # тень узкая и обязана лечь точно под кромку.
     width = max(8, round(pill.width() / 8) * 8)
-    height = max(8, round(pill.height() / 8) * 8)
+    height = max(8, round(pill.height()))
     pixmap = pill_shadow(width, height, pill.height() / 2, theme.SHADOW_BLUR, theme.SHADOW)
 
     pad = shadow_padding(theme.SHADOW_BLUR)
@@ -109,47 +110,6 @@ def _draw_pill_shadow(painter: QPainter, pill: QRectF) -> None:
         int(pill.center().y() - height / 2 - pad + theme.SHADOW_OFFSET_Y),
         pixmap,
     )
-
-
-class _ShadowWindow(QWidget):
-    """Тень живого HUD — отдельное полупрозрачное окно под пилюлей.
-
-    Живое окно непрозрачно и обрезано маской по контуру пилюли: всё, что оно
-    рисует, лежит поверх копии рабочего стола, а копия при прокрутке отстаёт
-    от настоящего стола на кадр-два. Тени нужна прозрачность на большой
-    площади, поэтому она вынесена в собственное окно, которое DWM компонует
-    поверх живого стола без задержки. В захват экрана оно попадает (Windows
-    исключает только непрозрачные окна) — в записи будет видна одна тень.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool
-            | Qt.WindowTransparentForInput
-            | Qt.WindowDoesNotAcceptFocus
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._pill = QRectF()
-        self._reveal = 0.0
-
-    def sync(self, pill: QRectF, reveal: float) -> None:
-        if pill == self._pill and abs(reveal - self._reveal) < 0.002:
-            return
-        self._pill = QRectF(pill)
-        self._reveal = reveal
-        self.update()
-
-    def paintEvent(self, _event) -> None:
-        if self._reveal <= 0.005 or self._pill.isEmpty():
-            return
-        painter = QPainter(self)
-        painter.setOpacity(theme.clamp(self._reveal))
-        _draw_pill_shadow(painter, self._pill)
 
 
 class Hud(QWidget):
@@ -174,10 +134,6 @@ class Hud(QWidget):
         # Живое стекло: фоновый поток пересобирает размытие из свежего снимка
         # экрана. None — прежний режим с одним снимком при появлении.
         self._live = live.LiveEngine() if cfg.liquid_live and live.available() else None
-        self._shadow: _ShadowWindow | None = None
-        if self._live is not None:
-            self._shadow = _ShadowWindow()
-            self.destroyed.connect(self._shadow.deleteLater)
         # Переход между тёмным и светлым стеклом вслед за живым фоном:
         # 0 — тёмное, 1 — светлое, дробное — кроссфейд.
         self._material_t = 0.0
@@ -219,7 +175,7 @@ class Hud(QWidget):
             # Живой режим: Windows отказывается исключать из захвата окна с
             # попиксельной прозрачностью, поэтому окно непрозрачно, обрезано
             # маской по контуру пилюли, а под стекло подкладывается снимок
-            # рабочего стола. Тень рисует отдельное окно (_ShadowWindow).
+            # рабочего стола. Тень рисуется на этой же подкладке.
             self.setAttribute(Qt.WA_NoSystemBackground, True)
             self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
@@ -232,8 +188,6 @@ class Hud(QWidget):
 
     def _apply_click_through(self) -> None:
         _win32_click_through(self)
-        if self._shadow is not None:
-            _win32_click_through(self._shadow)
 
         if self._live is not None and not live.exclude_from_capture(int(self.winId())):
             # Без исключения из захвата живой цикл снимал бы сам себя.
@@ -356,13 +310,7 @@ class Hud(QWidget):
 
         if self._live is not None:
             self._update_mask(self._pill_rect())
-        if self._shadow is not None:
-            self._shadow.sync(self._pill_rect(), self._reveal)
-            self._shadow.show()
         self.show()
-        if self._shadow is not None:
-            # Оба окна поверх всех; пилюля обязана быть выше собственной тени.
-            self.raise_()
         self._apply_click_through()
         if self._live is not None:
             self._live.start()
@@ -412,8 +360,6 @@ class Hud(QWidget):
         # исчезновение, и прямой hide() снаружи (демо пересоздаёт плашку).
         if self._live is not None:
             self._live.stop()
-        if self._shadow is not None:
-            self._shadow.hide()
         super().hideEvent(event)
 
     @staticmethod
@@ -449,8 +395,6 @@ class Hud(QWidget):
             x = area.center().x() - self.width() // 2
 
         self.move(int(x), int(y))
-        if self._shadow is not None:
-            self._shadow.setGeometry(self.geometry())
 
     # ---------- кадры ----------
 
@@ -471,8 +415,6 @@ class Hud(QWidget):
             size = (max(8, round(pill.width() / 8) * 8), max(8, round(pill.height())))
             self._live.set_inputs(self._capture_rect(pill, size), size, self._material)
             self._update_mask(pill)
-            if self._shadow is not None:
-                self._shadow.sync(pill, self._reveal)
         self.update()
 
     def _adapt_material(self) -> None:
@@ -510,11 +452,11 @@ class Hud(QWidget):
         self._material = theme.material_blend(self._material_t)
 
     def _update_mask(self, pill: QRectF) -> None:
-        """Обрезает живое окно по контуру пилюли, с запасом на свечение.
+        """Обрезает живое окно по контуру пилюли, с запасом на свечение и тень.
 
         Всё, что окно рисует, лежит поверх копии рабочего стола, а копия
-        отстаёт от него на кадр-два; маска оставляет от копии только полосу
-        под размытым стеклом, где отставание не разглядеть.
+        отстаёт от него на кадр-два; маска оставляет от копии только узкую
+        полосу вокруг стекла, где под тенью отставание не разглядеть.
         """
         rect = pill.adjusted(-_MASK_PAD, -_MASK_PAD, _MASK_PAD, _MASK_PAD)
         key = (round(rect.x()), round(rect.y()), round(rect.width()), round(rect.height()))
@@ -563,9 +505,7 @@ class Hud(QWidget):
         path = QPainterPath()
         path.addRoundedRect(pill, radius, radius)
 
-        if self._live is None:
-            # В живом режиме тень рисует собственное окно (_ShadowWindow).
-            _draw_pill_shadow(painter, pill)
+        _draw_pill_shadow(painter, pill)
         self._paint_glass(painter, path, pill)
         self._paint_glow(painter, pill)
         self._paint_icon(painter, pill)
@@ -760,16 +700,19 @@ class Hud(QWidget):
         return f"{int(elapsed) // 60}:{int(elapsed) % 60:02d}"
 
     def _target_width(self, status: Status) -> int:
-        if status.stage is Stage.LISTENING:
-            # Фиксированная ширина: иначе плашка дёргалась бы каждую секунду
-            # вместе с таймером.
-            return 320
         detail = " ".join(status.detail.split())
         text = max(
             self._title_metrics.horizontalAdvance(status.title),
             self._detail_metrics.horizontalAdvance(detail),
         )
         total = text + theme.PADDING_X * 2 + theme.ICON_SIZE + theme.ICON_GAP + 12
+        if status.stage is Stage.LISTENING:
+            # Место под таймер закладывается сразу, по самому широкому его
+            # значению: иначе плашка дёргалась бы каждую секунду вместе с
+            # цифрами. Раньше здесь стояла константа, и подсказка «отпустите
+            # клавишу, когда закончите» не влезала.
+            total += self._timer_metrics.horizontalAdvance("00:00") + 16 * self._scale
+            total = max(total, 320)
         return int(min(theme.PILL_MAX_WIDTH, max(theme.PILL_MIN_WIDTH, total)))
 
 

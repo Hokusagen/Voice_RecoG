@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 """Единственное место, где живёт номер версии.
 
 Попадает в подсказку трея и в каждую запись журнала: по записи всегда
