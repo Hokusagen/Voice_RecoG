@@ -53,7 +53,9 @@ jobs:
         run: |
           version=$(python -c "import sys; sys.path.insert(0, 'src'); from config import APP_VERSION; print(APP_VERSION)")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          name=VoiceTyper$([ -n "${{ matrix.lite }}" ] && echo "-lite")
+          # Не через «[ ] && echo»: для полного варианта такая подстановка
+          # возвращает код 1, а bash раннера идёт с -e и обрывает шаг.
+          if [ -n "${{ matrix.lite }}" ]; then name=VoiceTyper-lite; else name=VoiceTyper; fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: PyInstaller
