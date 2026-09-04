@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import time
@@ -42,6 +43,7 @@ class WhisperEngine:
         self._model = None
         self.device = ""
         self.compute_type = ""
+        self.model_name = ""
 
     # ---------- загрузка ----------
 
@@ -65,21 +67,27 @@ class WhisperEngine:
         except OSError:
             return False
 
-    def load(self) -> str:
-        """Загружает модель и возвращает строку вида 'cuda / int8_float16'."""
+    def load(self, device: str | None = None) -> str:
+        """Загружает модель и возвращает строку вида 'cuda / int8_float16'.
+
+        device перекрывает настройку: так конвейер переселяет модель на
+        процессор, когда видеокарту отдали другим задачам, и обратно.
+        """
         from faster_whisper import WhisperModel
 
-        attempts = self._device_plan()
+        self.unload()
+        attempts = self._device_plan(device or self.cfg.device)
+        # На процессоре может стоять другая, более лёгкая модель.
+        name = self.cfg.cpu_model if device == "cpu" and self.cfg.cpu_model else self.cfg.model
         last_error: Exception | None = None
         for device, compute_type in attempts:
             try:
                 started = time.monotonic()
-                self._model = WhisperModel(
-                    self.cfg.model, device=device, compute_type=compute_type
-                )
+                self._model = WhisperModel(name, device=device, compute_type=compute_type)
                 self.device, self.compute_type = device, compute_type
                 took = time.monotonic() - started
-                print(f"[stt] {self.cfg.model} на {device}/{compute_type} за {took:.1f} с")
+                print(f"[stt] {name} на {device}/{compute_type} за {took:.1f} с")
+                self.model_name = name
                 return f"{device} / {compute_type}"
             except Exception as exc:
                 last_error = exc
@@ -87,13 +95,27 @@ class WhisperEngine:
 
         raise RuntimeError(f"не удалось загрузить Whisper: {last_error}")
 
-    def _device_plan(self) -> list[tuple[str, str]]:
+    def unload(self) -> None:
+        """Отпускает модель вместе с её видеопамятью.
+
+        ctranslate2 освобождает память при уничтожении объекта, но ссылка на
+        него могла остаться в кадрах сборщика — поэтому ещё и gc.collect().
+        """
+        if self._model is None:
+            return
+        self._model = None
+        self.device = self.compute_type = ""
+        gc.collect()
+
+    def _device_plan(self, wanted_device: str) -> list[tuple[str, str]]:
         """Список попыток «устройство + точность» от желаемой к запасной."""
-        wanted_device = self.cfg.device.lower()
+        wanted_device = wanted_device.lower()
         wanted_compute = self.cfg.compute_type.lower()
 
         def compute_for(device: str) -> str:
-            if wanted_compute != "auto":
+            # Явно заданная точность относится к видеокарте: на процессоре
+            # float16 не поддерживается, а int8 — единственный быстрый вариант.
+            if wanted_compute != "auto" and device == "cuda":
                 return wanted_compute
             # int8_float16 на Turing и новее даёт вдвое меньше VRAM при том же
             # качестве — на карте с 4 ГБ это разница между «влезло вместе с

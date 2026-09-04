@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QCursor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core.state import Stage
@@ -99,18 +99,21 @@ def _draw_mic(painter: QPainter, box: QRectF, color: QColor) -> None:
 
 class Tray(QSystemTrayIcon):
     pause_toggled = Signal(bool)
+    gpu_toggled = Signal(bool)
     sounds_toggled = Signal(bool)
     autostart_toggled = Signal(bool)
     mode_changed = Signal(str)
+    style_changed = Signal(str)
     history_picked = Signal(str)
     config_requested = Signal()
     journal_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, cfg, hotkeys_cfg) -> None:
+    def __init__(self, cfg, hotkeys_cfg, llm_cfg) -> None:
         super().__init__()
         self.cfg = cfg
         self._hotkeys = hotkeys_cfg
+        self._llm = llm_cfg
         self._stage = Stage.IDLE
         self._frame = 0
         self._cache: dict[Stage, list[QIcon]] = {}
@@ -137,6 +140,13 @@ class Tray(QSystemTrayIcon):
         self._pause_action.toggled.connect(self.pause_toggled)
         menu.addAction(self._pause_action)
 
+        self._gpu_action = QAction("Отдать видеокарту", menu, checkable=True)
+        self._gpu_action.setToolTip(
+            "Whisper на процессоре, редактор выгружен: видеопамять свободна для других задач"
+        )
+        self._gpu_action.toggled.connect(self.gpu_toggled)
+        menu.addAction(self._gpu_action)
+
         mode_menu = menu.addMenu("Режим клавиши")
         group = QActionGroup(mode_menu)
         group.setExclusive(True)
@@ -146,6 +156,16 @@ class Tray(QSystemTrayIcon):
             action.triggered.connect(lambda _checked, v=value: self.mode_changed.emit(v))
             group.addAction(action)
             mode_menu.addAction(action)
+
+        style_menu = menu.addMenu(f"Правка по {self._hotkeys.record.upper()}")
+        style_group = QActionGroup(style_menu)
+        style_group.setExclusive(True)
+        for value, label in (("careful", "Бережная: убрать мусор"), ("dry", "Сухая: только суть")):
+            action = QAction(label, style_menu, checkable=True)
+            action.setChecked(self._llm.style == value)
+            action.triggered.connect(lambda _checked, v=value: self.style_changed.emit(v))
+            style_group.addAction(action)
+            style_menu.addAction(action)
 
         self._history_menu = menu.addMenu("История")
         self._history_menu.setEnabled(False)
@@ -180,6 +200,11 @@ class Tray(QSystemTrayIcon):
         self._autostart_action.blockSignals(True)
         self._autostart_action.setChecked(enabled)
         self._autostart_action.blockSignals(False)
+
+    def set_gpu_released(self, released: bool) -> None:
+        self._gpu_action.blockSignals(True)
+        self._gpu_action.setChecked(released)
+        self._gpu_action.blockSignals(False)
 
     def set_history(self, entries) -> None:
         self._history_menu.clear()
@@ -223,6 +248,10 @@ class Tray(QSystemTrayIcon):
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         # Одиночный клик по трею случается слишком легко, чтобы вешать на него
-        # паузу: диктовка отключилась бы незаметно для пользователя.
+        # паузу: диктовка отключилась бы незаметно для пользователя. Поэтому
+        # левый клик открывает то же меню, что и правый, — переключатели
+        # режимов оказываются на один клик ближе.
         if reason == QSystemTrayIcon.DoubleClick:
             self._pause_action.toggle()
+        elif reason == QSystemTrayIcon.Trigger:
+            self._menu.popup(QCursor.pos())

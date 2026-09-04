@@ -87,7 +87,7 @@ class OllamaClient:
                 f"{self._base}/api/generate",
                 json={
                     "model": self.cfg.model,
-                    "prompt": self._build_prompt("Ну это самое, проверка связи."),
+                    "prompt": self._build_prompt("Ну это самое, проверка связи.", self.cfg.style),
                     "stream": False,
                     "keep_alive": self.cfg.keep_alive,
                     "options": {
@@ -107,6 +107,24 @@ class OllamaClient:
             print(f"[llm] прогрев не удался: {self.last_error}")
             return False
 
+    def unload(self) -> bool:
+        """Просит Ollama выгрузить модель прямо сейчас.
+
+        keep_alive=0 в пустом запросе освобождает видеопамять мгновенно, не
+        дожидаясь таймаута из настроек; сама Ollama при этом продолжает жить.
+        """
+        try:
+            response = self._session.post(
+                f"{self._base}/api/generate",
+                json={"model": self.cfg.model, "keep_alive": 0},
+                timeout=10.0,
+            )
+            return response.status_code == 200
+        except requests.RequestException as exc:
+            self.last_error = _describe(exc)
+            print(f"[llm] выгрузка не удалась: {self.last_error}")
+            return False
+
     # ---------- основная работа ----------
 
     def skip_reason(self, raw_text: str) -> str:
@@ -121,9 +139,12 @@ class OllamaClient:
         """Короткие реплики не стоят похода в модель."""
         return bool(self.skip_reason(raw_text))
 
-    def polish(self, raw_text: str) -> Polished:
-        """Возвращает правку с таймингами. Бросает LLMUnavailable при сбое."""
-        prompt = self._build_prompt(raw_text)
+    def polish(self, raw_text: str, style: str = "careful") -> Polished:
+        """Возвращает правку с таймингами. Бросает LLMUnavailable при сбое.
+
+        style — careful (вычистить мусор) или dry (оставить только суть).
+        """
+        prompt = self._build_prompt(raw_text, style)
         payload = {
             "model": self.cfg.model,
             "prompt": prompt,
@@ -181,11 +202,14 @@ class OllamaClient:
         self.last_error = None
         return polished
 
-    def _build_prompt(self, raw_text: str) -> str:
+    def _build_prompt(self, raw_text: str, style: str = "careful") -> str:
         # Системная часть неизменна от запроса к запросу, поэтому Ollama
         # переиспользует её KV-кэш и обсчитывает заново только сам транскрипт.
+        # Смена стиля меняет префикс, и первая фраза в новом стиле платит за
+        # его обсчёт пару секунд — дальше кэш снова работает.
+        system = self.cfg.dry_prompt if style == "dry" else self.cfg.system_prompt
         return (
-            f"{self.cfg.system_prompt}\n\n"
+            f"{system}\n\n"
             f'Input text:\n"{raw_text}"\n\n'
             f"Cleaned output text:"
         )
@@ -203,6 +227,12 @@ def _sanitize(text: str) -> str:
 
     if len(text) >= 2 and text[0] in "\"'«“" and text[-1] in "\"'»”":
         text = text[1:-1].strip()
+
+    # Сухой стиль любит оформлять списком даже одну мысль; список из одного
+    # пункта — это просто предложение.
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) == 1 and lines[0].lstrip().startswith(("- ", "— ", "• ")):
+        text = lines[0].lstrip()[2:]
 
     return text.strip()
 

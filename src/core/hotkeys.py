@@ -21,7 +21,7 @@ from config import HotkeysConfig
 
 #: Действия в порядке убывания специфичности: ctrl+f8 должен побеждать f8,
 #: иначе одно нажатие поднимет сразу оба.
-_ACTIONS = ("record_raw", "record")
+_ACTIONS = ("record_raw", "record_alt", "record")
 
 
 class HotkeyListener(QObject):

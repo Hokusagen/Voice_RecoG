@@ -27,12 +27,25 @@ from core.stt import WhisperEngine
 @dataclass
 class Job:
     audio: np.ndarray
-    polish: bool
+    style: str | None
+    """careful | dry — стиль правки; None — вставить сырой текст Whisper."""
+
     hotkey: str
 
 
 class _Shutdown:
     """Маркер конца очереди."""
+
+
+@dataclass
+class _ReleaseGpu:
+    """Просьба отдать видеокарту (True) или забрать обратно (False).
+
+    Идёт через ту же очередь, что и диктовки: переселение моделей происходит
+    строго между фразами, в рабочем потоке, и не гонится с распознаванием.
+    """
+
+    released: bool
 
 
 class Pipeline(QObject):
@@ -56,8 +69,10 @@ class Pipeline(QObject):
         sounds,
         sample_rate: int,
         journal_log: Journal | None = None,
+        release_gpu: bool = False,
     ) -> None:
         super().__init__()
+        self._release_gpu = release_gpu
         self._whisper = whisper
         self._llm = llm
         self._paster = paster
@@ -83,6 +98,14 @@ class Pipeline(QObject):
     def submit(self, job: Job) -> None:
         self._queue.put(job)
 
+    def set_gpu_released(self, released: bool) -> None:
+        """Отдать видеокарту или забрать обратно; выполнится между фразами."""
+        self._queue.put(_ReleaseGpu(released))
+
+    @property
+    def gpu_released(self) -> bool:
+        return self._release_gpu
+
     @property
     def is_busy(self) -> bool:
         return self._busy.is_set()
@@ -98,7 +121,10 @@ class Pipeline(QObject):
                 return
             self._busy.set()
             try:
-                self._process(item)
+                if isinstance(item, _ReleaseGpu):
+                    self._switch_gpu(item.released)
+                else:
+                    self._process(item)
             except Exception as exc:  # поток не должен умирать из-за одной фразы
                 print(f"[pipeline] непредвиденный сбой: {exc}")
                 self._emit(Stage.ERROR, "Сбой обработки", str(exc))
@@ -113,9 +139,12 @@ class Pipeline(QObject):
             else "готовлю распознавание"
         )
         self._emit(Stage.LOADING, "Загружаю модель", detail)
+        return self._bring_up()
 
+    def _bring_up(self) -> bool:
+        """Поднимает Whisper на нужном устройстве и Ollama, шлёт ready."""
         try:
-            where = self._whisper.load()
+            where = self._whisper.load(self._whisper_device())
         except Exception as exc:
             self._emit(Stage.ERROR, "Whisper не запустился", str(exc))
             self.failed.emit(str(exc))
@@ -128,6 +157,29 @@ class Pipeline(QObject):
         self._emit(Stage.IDLE)
         return True
 
+    def _whisper_device(self) -> str | None:
+        """None — как в настройках; «cpu» — пока видеокарта отдана."""
+        return "cpu" if self._release_gpu else None
+
+    def _switch_gpu(self, released: bool) -> None:
+        """Переселяет модели: на процессор без правки — или обратно на видеокарту.
+
+        Переезд туда занимает секунды (выгрузка мгновенна, Whisper на CPU
+        грузится из кэша на диске), обратно — десяток секунд с прогревом.
+        Всё это время очередь диктовок ждёт, а HUD показывает «Загружаю».
+        """
+        if released == self._release_gpu and self._whisper.is_loaded:
+            return
+        self._release_gpu = released
+        if released:
+            self._emit(Stage.LOADING, "Отдаю видеокарту", "выгружаю редактор")
+            if self._llm.cfg.enabled:
+                self._llm.unload()
+            self._emit(Stage.LOADING, "Отдаю видеокарту", "Whisper переезжает на процессор")
+        else:
+            self._emit(Stage.LOADING, "Забираю видеокарту", "Whisper возвращается на CUDA")
+        self._bring_up()
+
     def _prepare_llm(self) -> str:
         """Поднимает Ollama и возвращает подпись о её состоянии.
 
@@ -136,6 +188,8 @@ class Pipeline(QObject):
         """
         if not self._llm.cfg.enabled:
             return "без правки"
+        if self._release_gpu:
+            return "видеокарта отдана, без правки"
 
         # Ollama держит модель в памяти только пять минут после запроса, поэтому
         # без прогрева первая же диктовка ждала бы загрузку весов.
@@ -173,12 +227,21 @@ class Pipeline(QObject):
         text = raw_text
         warning: str | None = None
 
-        record.skipped = "сырой режим" if not job.polish else self._llm.skip_reason(raw_text)
+        if job.style is None:
+            record.skipped = "сырой режим"
+        elif self._release_gpu:
+            # Гонять 3b-модель на процессоре — это десятки секунд на фразу;
+            # пока видеокарта отдана, честнее вставлять текст как есть.
+            record.skipped = "видеокарта отдана"
+        else:
+            record.skipped = self._llm.skip_reason(raw_text)
         if not record.skipped:
             record.llm_model = self._llm.cfg.model
-            self._emit(Stage.POLISHING, "Причёсываю", self._llm.cfg.model)
+            record.style = job.style or ""
+            verb = "Сушу" if job.style == "dry" else "Причёсываю"
+            self._emit(Stage.POLISHING, verb, self._llm.cfg.model)
             try:
-                polished = self._llm.polish(raw_text)
+                polished = self._llm.polish(raw_text, job.style or "careful")
             except LLMUnavailable as exc:
                 warning = str(exc)
                 record.error = warning

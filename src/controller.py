@@ -43,12 +43,12 @@ class Controller(QObject):
         self.hud = Hud(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
 
-        self.tray = Tray(cfg.ui, cfg.hotkeys)
+        self.tray = Tray(cfg.ui, cfg.hotkeys, cfg.llm)
         self.hotkeys = HotkeyListener(cfg.hotkeys)
 
         self.pipeline = Pipeline(
             self.whisper, self.llm, self.paster, self.sounds, cfg.audio.sample_rate,
-            journal_log=self.journal,
+            journal_log=self.journal, release_gpu=cfg.release_gpu,
         )
 
         self._action: str | None = None
@@ -80,9 +80,11 @@ class Controller(QObject):
         self.pipeline.transcribed.connect(self._on_transcribed)
 
         self.tray.pause_toggled.connect(self._on_pause)
+        self.tray.gpu_toggled.connect(self._on_release_gpu)
         self.tray.sounds_toggled.connect(self._on_sounds)
         self.tray.autostart_toggled.connect(self._on_autostart)
         self.tray.mode_changed.connect(self._on_mode)
+        self.tray.style_changed.connect(self._on_style)
         self.tray.history_picked.connect(self._on_history_pick)
         self.tray.config_requested.connect(self._on_open_config)
         self.tray.journal_requested.connect(self._on_open_journal)
@@ -92,6 +94,7 @@ class Controller(QObject):
 
     def start(self) -> None:
         self.tray.set_autostart_checked(autostart.is_enabled())
+        self.tray.set_gpu_released(self.cfg.release_gpu)
         self.tray.set_history(self.history)
         self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}")
         self.tray.show()
@@ -155,6 +158,11 @@ class Controller(QObject):
         hint = "отпустите клавишу, когда закончите"
         if self.cfg.hotkeys.mode == "toggle":
             hint = f"нажмите {self.cfg.hotkeys.record.upper()} ещё раз"
+        style = self._style_for(action)
+        if style == "dry":
+            hint = f"сухо · {hint}"
+        elif style is None:
+            hint = f"без правки · {hint}"
         self._show(Stage.LISTENING, "Слушаю", hint)
         self._max_duration.start(self.cfg.audio.max_duration_s * 1000)
 
@@ -182,8 +190,17 @@ class Controller(QObject):
             return
 
         self.pipeline.submit(
-            Job(audio=audio, polish=action == "record", hotkey=getattr(self.cfg.hotkeys, action))
+            Job(audio=audio, style=self._style_for(action), hotkey=getattr(self.cfg.hotkeys, action))
         )
+
+    def _style_for(self, action: str) -> str | None:
+        """Какой правкой заканчивается запись по этой клавише."""
+        if action == "record_raw":
+            return None
+        main = self.cfg.llm.style if self.cfg.llm.style in ("careful", "dry") else "careful"
+        if action == "record":
+            return main
+        return "dry" if main == "careful" else "careful"
 
     @Slot()
     def _on_max_duration(self) -> None:
@@ -203,7 +220,7 @@ class Controller(QObject):
     @Slot(str)
     def _on_ready(self, where: str) -> None:
         self._ready = True
-        summary = f"{self.cfg.whisper.model} · {where}"
+        summary = f"{self.whisper.model_name or self.cfg.whisper.model} · {where}"
         self.tray.set_summary(summary)
         self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}\n{summary}")
         self.sounds.play("ready")
@@ -235,6 +252,14 @@ class Controller(QObject):
             self._show(Stage.DONE, "Снова слушаю", f"зажмите {self.cfg.hotkeys.record.upper()}")
 
     @Slot(bool)
+    def _on_release_gpu(self, released: bool) -> None:
+        self.cfg.release_gpu = released
+        self.cfg.save()
+        if self._action is not None:
+            self._on_cancel()
+        self.pipeline.set_gpu_released(released)
+
+    @Slot(bool)
     def _on_sounds(self, enabled: bool) -> None:
         self.cfg.ui.sounds = enabled
         self.sounds.enabled = enabled
@@ -249,6 +274,14 @@ class Controller(QObject):
         self.cfg.save()
         if actual != enabled:
             self.tray.set_autostart_checked(actual)
+
+    @Slot(str)
+    def _on_style(self, style: str) -> None:
+        self.cfg.llm.style = style
+        self.cfg.save()
+        other = self.cfg.hotkeys.record_alt.upper()
+        label = "сухая" if style == "dry" else "бережная"
+        self._show(Stage.DONE, f"По {self.cfg.hotkeys.record.upper()} правка {label}", f"другая по {other}")
 
     @Slot(str)
     def _on_mode(self, mode: str) -> None:
