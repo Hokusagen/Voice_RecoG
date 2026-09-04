@@ -37,7 +37,7 @@ def _already_running() -> bool:
     """Второй экземпляр повесил бы второй хук — и каждая клавиша сработала бы дважды."""
     global _mutex_handle
     if sys.platform != "win32":
-        return False
+        return _lock_file_taken()
     import ctypes
 
     # Именно WinDLL(use_last_error=True) и ctypes.get_last_error(): вызов
@@ -50,6 +50,22 @@ def _already_running() -> bool:
 
     _mutex_handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
     return ctypes.get_last_error() == _ERROR_ALREADY_EXISTS
+
+
+def _lock_file_taken() -> bool:
+    """macOS и Linux: файл-замок в каталоге данных, держится всё время работы."""
+    global _mutex_handle
+    import fcntl
+
+    from config import app_data_dir
+
+    try:
+        handle = open(app_data_dir() / "instance.lock", "w")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    _mutex_handle = handle
+    return False
 
 
 def main() -> int:

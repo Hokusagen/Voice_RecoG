@@ -1,0 +1,53 @@
+# Проверка на каждый пуш: приложение импортируется и стартует без экрана на
+# Windows и macOS, в лёгком варианте зависимостей. Живого микрофона и
+# горячих клавиш на раннере нет, так что дальше импорта и загрузки конфига
+# проверка не идёт — но именно на импорте ломаются платформенные ветки.
+
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  smoke:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зависимости лёгкой сборки
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lite.txt
+
+      - name: Импорт и загрузка конфига
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "src")
+          from PySide6.QtWidgets import QApplication
+          app = QApplication([])
+          import controller, main  # noqa: F401 — тянет все платформенные модули
+          from core import stt, cloud, hotkeys, paster, sounds, autostart
+          from config import Config, APP_VERSION, app_data_dir
+          cfg = Config.load()
+          assert not stt.available(), "лёгкая сборка не должна видеть faster-whisper"
+          print("версия", APP_VERSION, "данные в", app_data_dir())
+          print("горячие клавиши:", hotkeys.normalize("Control"), hotkeys.normalize("command"))
+          board = sounds.SoundBoard(enabled=True)
+          print("звуки:", board.enabled)
+          EOF

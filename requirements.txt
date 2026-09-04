@@ -1,28 +1,11 @@
-# Интерфейс: окно HUD, трей, анимации.
-PySide6-Essentials>=6.7
+# Полная сборка: локальный Whisper плюс всё из requirements-lite.txt.
+# Лёгкая сборка (только облако) ставится из requirements-lite.txt.
+-r requirements-lite.txt
 
-# Распознавание речи.
+# Распознавание речи на этой машине.
 faster-whisper>=1.2
 
-# Захват звука и работа с массивами.
-sounddevice>=0.5
-numpy>=2.0
-
-# Глобальные горячие клавиши и буфер обмена Windows.
-keyboard>=0.13
-pywin32>=306
-
-# Живое стекло: DXGI Desktop Duplication (на гибридной графике сам откатится
-# на GDI, пакет всё равно нужен для проверки).
-bettercam>=1.0
-
-# Запросы к Ollama.
-requests>=2.32
-
-# Сборка в .exe (нужна только для build).
-pyinstaller>=6.10
-
-# --- Ускорение на видеокарте NVIDIA (необязательно) ---
+# --- Ускорение на видеокарте NVIDIA (необязательно, только Windows/Linux) ---
 # Без этих пакетов приложение само откатится на CPU.
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
+nvidia-cublas-cu12; sys_platform != "darwin"
+nvidia-cudnn-cu12; sys_platform != "darwin"

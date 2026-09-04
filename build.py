@@ -3,6 +3,7 @@
     python build.py             спросит подтверждение, соберёт, запустит обратно
     python build.py --yes       без вопросов
     python build.py --no-run    собрать, но не запускать
+    python build.py --lite      лёгкая сборка: без faster-whisper и CUDA, только облако
 
 Ручная сборка спотыкается об одно и то же: работающий VoiceTyper держит
 собственный .exe открытым, PyInstaller падает на записи, а после сборки
@@ -11,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -21,8 +23,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from config import APP_VERSION  # noqa: E402  — путь настраивается выше
 
-EXE = ROOT / "dist" / "VoiceTyper" / "VoiceTyper.exe"
 SPEC = ROOT / "VoiceTyper.spec"
+LITE = "--lite" in sys.argv
+NAME = "VoiceTyper-lite" if LITE else "VoiceTyper"
+EXE = ROOT / "dist" / NAME / f"{NAME}.exe"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
 
@@ -54,14 +58,14 @@ def stop() -> bool:
     if not locked():
         return True
     print("  VoiceTyper запущен — закрываю")
-    subprocess.run(["taskkill", "/IM", "VoiceTyper.exe"], capture_output=True)
+    subprocess.run(["taskkill", "/IM", f"{NAME}.exe"], capture_output=True)
     for _ in range(20):
         if not locked():
             return True
         time.sleep(0.25)
 
     print("  не закрылся по-хорошему — снимаю принудительно")
-    subprocess.run(["taskkill", "/F", "/IM", "VoiceTyper.exe"], capture_output=True)
+    subprocess.run(["taskkill", "/F", "/IM", f"{NAME}.exe"], capture_output=True)
     for _ in range(20):
         if not locked():
             return True
@@ -77,7 +81,7 @@ def main(argv: list[str]) -> int:
     yes = "--yes" in argv or "-y" in argv
     run_after = "--no-run" not in argv
 
-    print(f"\nСборка VoiceTyper {APP_VERSION}\n")
+    print(f"\nСборка {NAME} {APP_VERSION}\n")
     note = head_note()
     if note:
         print(f"  {note}\n")
@@ -99,9 +103,11 @@ def main(argv: list[str]) -> int:
 
     started = time.monotonic()
     print("\n  PyInstaller пошёл, это минуты…\n")
+    env = dict(os.environ, VOICETYPER_LITE="1" if LITE else "", VOICETYPER_VERSION=APP_VERSION)
     result = subprocess.run(
         [str(ROOT / "venv" / "Scripts" / "pyinstaller.exe"), str(SPEC), "--noconfirm"],
         cwd=ROOT,
+        env=env,
     )
     if result.returncode != 0:
         print(f"\n  сборка провалилась, код {result.returncode}")

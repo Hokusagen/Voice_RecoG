@@ -20,8 +20,22 @@ from config import app_data_dir
 
 if sys.platform == "win32":
     import winsound
-else:  # pragma: no cover — приложение рассчитано на Windows
+else:
     winsound = None
+
+import shutil
+import subprocess
+
+#: Проигрыватель для систем без winsound: на macOS afplay есть всегда, на
+#: Linux — что найдётся из aplay/paplay. Пусто — звуков не будет.
+_PLAYER: list[str] | None = None
+if sys.platform == "darwin":
+    _PLAYER = ["afplay"]
+elif sys.platform != "win32":
+    for candidate in (["paplay"], ["aplay", "-q"]):
+        if shutil.which(candidate[0]):
+            _PLAYER = candidate
+            break
 
 SAMPLE_RATE = 44_100
 _MAX_AMPLITUDE = 32_767
@@ -105,7 +119,7 @@ class SoundBoard:
     """Готовые сигналы на диске плюс мгновенное асинхронное воспроизведение."""
 
     def __init__(self, enabled: bool = True, volume: float = 0.35) -> None:
-        self.enabled = enabled and winsound is not None
+        self.enabled = enabled and (winsound is not None or _PLAYER is not None)
         self._volume = max(0.0, min(1.0, volume))
         self._dir = app_data_dir() / "sounds"
         self._paths: dict[str, Path] = {}
@@ -147,9 +161,15 @@ class SoundBoard:
         if path is None or not path.exists():
             return
         try:
-            winsound.PlaySound(
-                str(path),
-                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
-            )
+            if winsound is not None:
+                winsound.PlaySound(
+                    str(path),
+                    winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                )
+            elif _PLAYER is not None:
+                subprocess.Popen(
+                    _PLAYER + [str(path)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
         except Exception as exc:  # звук не критичен, глушим любые сбои устройства
             print(f"[sounds] не удалось проиграть {name}: {exc}")

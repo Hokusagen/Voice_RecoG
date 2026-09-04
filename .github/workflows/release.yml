@@ -1,0 +1,110 @@
+# Сборка релиза по тегу вида v0.5.0: четыре архива в GitHub Releases.
+#
+#   VoiceTyper-<версия>-windows-full.zip   локальный Whisper + CUDA, около 2 ГБ
+#   VoiceTyper-<версия>-windows-lite.zip   только облако, около 150 МБ
+#   VoiceTyper-<версия>-macos-full.zip     локальный Whisper на процессоре
+#   VoiceTyper-<версия>-macos-lite.zip     только облако
+#
+# Тег ставится на коммит с нужной версией в src/config.py:
+#   git tag v0.5.0 && git push origin v0.5.0
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, variant: full, runner: windows-latest, lite: "" }
+          - { os: windows, variant: lite, runner: windows-latest, lite: "1" }
+          - { os: macos, variant: full, runner: macos-latest, lite: "" }
+          - { os: macos, variant: lite, runner: macos-latest, lite: "1" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зависимости
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -n "${{ matrix.lite }}" ]; then
+            pip install -r requirements-lite.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Версия из исходников
+        id: version
+        shell: bash
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); from config import APP_VERSION; print(APP_VERSION)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          name=VoiceTyper$([ -n "${{ matrix.lite }}" ] && echo "-lite")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: PyInstaller
+        shell: bash
+        env:
+          VOICETYPER_LITE: ${{ matrix.lite }}
+          VOICETYPER_VERSION: ${{ steps.version.outputs.version }}
+        run: pyinstaller VoiceTyper.spec --noconfirm
+
+      - name: Архив
+        shell: bash
+        run: |
+          cd dist
+          archive="VoiceTyper-${{ steps.version.outputs.version }}-${{ matrix.os }}-${{ matrix.variant }}.zip"
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            # ditto сохраняет права и подписи внутри .app, zip их ломает.
+            ditto -c -k --sequesterRsrc --keepParent "${{ steps.version.outputs.name }}.app" "$archive"
+          else
+            7z a -tzip -mx=5 "$archive" "${{ steps.version.outputs.name }}" > /dev/null
+          fi
+          ls -la "$archive"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.variant }}
+          path: dist/VoiceTyper-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Заметки к версии из CHANGELOG.md
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if (index($0, "## " v) == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: artifacts/*.zip

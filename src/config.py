@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -78,9 +79,18 @@ DEFAULT_INITIAL_PROMPT = (
 
 
 def app_data_dir() -> Path:
-    """Каталог для конфига, истории и логов. Работает и из .exe, и из исходников."""
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = Path(base) / APP_NAME
+    """Каталог для конфига, истории и логов. Работает и из .exe, и из исходников.
+
+    Windows: %APPDATA%\\VoiceTyper. macOS: ~/Library/Application Support/VoiceTyper.
+    Остальные: ~/.config/VoiceTyper.
+    """
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or os.path.expanduser("~"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    path = base / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 

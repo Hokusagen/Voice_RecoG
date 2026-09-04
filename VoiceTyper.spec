@@ -16,14 +16,27 @@
 
 import glob
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all
 
+#: Лёгкая сборка: без faster-whisper и CUDA, распознаёт и правит только облако.
+#: Включается переменной окружения VOICETYPER_LITE=1 (так делает build.py --lite).
+LITE = os.environ.get("VOICETYPER_LITE", "").strip() not in ("", "0")
+NAME = "VoiceTyper-lite" if LITE else "VoiceTyper"
+
 datas = []
 binaries = []
-hiddenimports = ["win32clipboard", "win32con"]
+hiddenimports = []
+if sys.platform == "win32":
+    hiddenimports += ["win32clipboard", "win32con"]
+else:
+    hiddenimports += ["pynput.keyboard._darwin" if sys.platform == "darwin" else "pynput.keyboard._xorg"]
 
-for package in ("faster_whisper", "ctranslate2", "onnxruntime", "sounddevice"):
+packages = ["sounddevice"]
+if not LITE:
+    packages += ["faster_whisper", "ctranslate2", "onnxruntime"]
+for package in packages:
     package_datas, package_binaries, package_hidden = collect_all(package)
     datas += package_datas
     binaries += package_binaries
@@ -58,7 +71,7 @@ a = Analysis(
         "pystray",
         "plyer",
         "pyperclip",
-    ],
+    ] + (["faster_whisper", "ctranslate2", "onnxruntime", "torch"] if LITE else []),
     noarchive=False,
     optimize=0,
 )
@@ -69,7 +82,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="VoiceTyper",
+    name=NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -89,5 +102,21 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="VoiceTyper",
+    name=NAME,
 )
+
+if sys.platform == "darwin":
+    # Приложение живёт в строке меню: LSUIElement прячет его из Dock. Описания
+    # разрешений обязательны, иначе macOS молча откажет в микрофоне и экране.
+    app = BUNDLE(
+        coll,
+        name=f"{NAME}.app",
+        bundle_identifier="com.hokusagen.voicetyper",
+        info_plist={
+            "CFBundleDisplayName": "VoiceTyper",
+            "CFBundleShortVersionString": os.environ.get("VOICETYPER_VERSION", "0.0.0"),
+            "LSUIElement": True,
+            "NSMicrophoneUsageDescription": "Микрофон нужен для диктовки.",
+            "NSAppleEventsUsageDescription": "Вставка текста в активное окно.",
+        },
+    )

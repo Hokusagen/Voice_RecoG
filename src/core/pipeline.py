@@ -177,7 +177,9 @@ class Pipeline(QObject):
             self._emit(Stage.LOADING, "Прогреваю модель", where)
             self._whisper.warmup()
 
-        self.ready.emit(f"{where} · {self._prepare_llm()}")
+        summary = f"{where} · {self._prepare_llm()}"
+        print(f"[pipeline] готов: {summary}")
+        self.ready.emit(summary)
         self._emit(Stage.IDLE)
         return True
 
