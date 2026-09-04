@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import os
 import re
 import time
@@ -28,6 +29,18 @@ _HALLUCINATIONS = (
 )
 
 _PUNCT_ONLY = re.compile(r"^[\s.,!?…\-–—\"'«»()]*$")
+
+
+def available() -> bool:
+    """Установлен ли faster-whisper.
+
+    Лёгкая сборка идёт без него: распознаёт и правит только облако. Сам
+    импорт здесь не делается — он тянет ctranslate2 и стоит секунды.
+    """
+    try:
+        return importlib.util.find_spec("faster_whisper") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class WhisperEngine:

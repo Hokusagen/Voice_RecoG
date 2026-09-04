@@ -73,6 +73,13 @@ class Controller(QObject):
         self._tray_reset.setSingleShot(True)
         self._tray_reset.timeout.connect(self._reset_tray_stage)
 
+        # Облако упёрлось в лимит: по времени сброса из заголовков сообщаем,
+        # что снова можно диктовать в облако, а не гадать по отказам.
+        self._limit_restore = QTimer(self)
+        self._limit_restore.setSingleShot(True)
+        self._limit_restore.timeout.connect(self._on_limit_restored)
+        self._limit_kind = ""
+
         self._connect()
 
     def _connect(self) -> None:
@@ -85,6 +92,7 @@ class Controller(QObject):
         self.pipeline.failed.connect(self._on_failed)
         self.pipeline.transcribed.connect(self._on_transcribed)
         self.pipeline.quota.connect(self._on_quota)
+        self.pipeline.limited.connect(self._on_limited)
 
         self.tray.pause_toggled.connect(self._on_pause)
         self.tray.gpu_toggled.connect(self._on_release_gpu)
@@ -241,6 +249,21 @@ class Controller(QObject):
         self._ready = False
         self.tray.set_summary("Не запустился")
         self.sounds.play("error")
+
+    @Slot(str, float)
+    def _on_limited(self, kind: str, reset_s: float) -> None:
+        self._limit_kind = kind
+        # Секунда сверху: заголовок отдаёт время до сброса с округлением вниз.
+        self._limit_restore.start(int(max(1.0, reset_s) * 1000) + 1000)
+
+    @Slot()
+    def _on_limit_restored(self) -> None:
+        if self._limit_kind == "day":
+            self._show(Stage.DONE, "Суточный лимит облака восстановлен", "правка снова в облаке")
+        else:
+            self._show(Stage.DONE, "Лимит по токенам в минуту восстановлен", "правка снова в облаке")
+        self.sounds.play("ready")
+        self.tray.set_quota(self.cloud.quota_line())
 
     @Slot(str)
     def _on_quota(self, line: str) -> None:

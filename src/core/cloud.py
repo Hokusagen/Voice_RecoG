@@ -220,6 +220,11 @@ class CloudClient:
             raise LLMUnavailable(self.last_error) from exc
 
         self._remember(response)
+        if response.status_code == 429:
+            self.last_error = _http_error(response)
+            retry = parse_duration(response.headers.get("retry-after", ""))
+            kind = "day" if (self.quota.requests_now() or 1) <= 0 else "minute"
+            raise CloudLimited(self.last_error, kind, retry or self.quota.tokens_reset_s or 60.0)
         if response.status_code != 200:
             self.last_error = _http_error(response)
             raise LLMUnavailable(self.last_error)
@@ -302,6 +307,15 @@ class CloudClient:
 
 class CloudUnavailable(RuntimeError):
     """Облачное распознавание не ответило; конвейер откатится на локальное."""
+
+
+class CloudLimited(LLMUnavailable):
+    """Облако упёрлось в лимит. kind — «minute» или «day», reset_s — когда отпустит."""
+
+    def __init__(self, message: str, kind: str, reset_s: float) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.reset_s = reset_s
 
 
 def _describe(exc: Exception) -> str:

@@ -17,7 +17,8 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from core import journal
-from core.cloud import CloudClient, CloudUnavailable
+from core import stt
+from core.cloud import CloudClient, CloudLimited, CloudUnavailable
 from core.journal import Journal, Record
 from core.llm import LLMUnavailable, OllamaClient, Polished
 from core.paster import ClipboardError, Paster
@@ -65,6 +66,9 @@ class Pipeline(QObject):
     quota = Signal(str)
     """Остатки лимитов облака после очередного запроса, строкой для трея."""
 
+    limited = Signal(str, float)
+    """Облако упёрлось в лимит: вид («minute» или «day») и секунды до сброса."""
+
     def __init__(
         self,
         whisper: WhisperEngine,
@@ -79,6 +83,9 @@ class Pipeline(QObject):
         super().__init__()
         self._release_gpu = release_gpu
         self._cloud = cloud
+        self._lite = not stt.available()
+        """Лёгкая сборка: локального Whisper нет, всё делает облако."""
+
         self._whisper = whisper
         self._llm = llm
         self._paster = paster
@@ -149,6 +156,11 @@ class Pipeline(QObject):
 
     def _bring_up(self) -> bool:
         """Поднимает Whisper на нужном устройстве и Ollama, шлёт ready."""
+        if self._lite and not self._cloud_configured:
+            message = "лёгкая сборка распознаёт только в облаке — вставьте cloud.api_key в настройки"
+            self._emit(Stage.ERROR, "Нужен ключ облака", message)
+            self.failed.emit(message)
+            return False
         if self._cloud_whisper:
             # Локальную модель не грузим вовсе: на процессоре она занимает
             # полторы гигабайта памяти, которой и так впритык. Поднимется
@@ -170,22 +182,25 @@ class Pipeline(QObject):
         return True
 
     @property
+    def _cloud_configured(self) -> bool:
+        return self._cloud is not None and self._cloud.configured
+
+    @property
     def _cloud_whisper(self) -> bool:
-        """Распознавать в облаке: видеокарта отдана, ключ есть, так настроено."""
-        return bool(
-            self._release_gpu
-            and self._cloud is not None
-            and self._cloud.configured
-            and self._whisper.cfg.cloud_when_released
-        )
+        """Распознавать в облаке: лёгкая сборка — всегда; иначе пока видеокарта
+        отдана, есть ключ и так настроено."""
+        if not self._cloud_configured:
+            return False
+        if self._lite:
+            return True
+        return bool(self._release_gpu and self._whisper.cfg.cloud_when_released)
 
     @property
     def _cloud_llm(self) -> bool:
-        return bool(
-            self._llm.cfg.backend == "cloud"
-            and self._cloud is not None
-            and self._cloud.configured
-        )
+        """Править в облаке: лёгкая сборка — всегда при ключе; иначе по настройке."""
+        if not self._cloud_configured:
+            return False
+        return self._lite or self._llm.cfg.backend == "cloud"
 
     def _whisper_device(self) -> str | None:
         """None — как в настройках; «cpu» — пока видеокарта отдана."""
@@ -219,6 +234,8 @@ class Pipeline(QObject):
         """
         if not self._llm.cfg.enabled:
             return "без правки"
+        if self._lite and not self._cloud_llm:
+            return "без правки: нет ключа облака"
         if self._cloud_llm:
             # Ollama не трогаем: пока правит облако, её 2 ГБ видеопамяти
             # свободны. Если облако подведёт, Ollama поднимется сама.
@@ -246,7 +263,15 @@ class Pipeline(QObject):
 
         self._emit(Stage.TRANSCRIBING, "Распознаю", f"{seconds:.1f} с записи")
         heard = time.monotonic()
-        raw_text = self._transcribe(job.audio, record)
+        try:
+            raw_text = self._transcribe(job.audio, record)
+        except CloudUnavailable as exc:
+            # Лёгкая сборка: локального Whisper нет, откатываться некуда.
+            record.error = str(exc)
+            self._close(record, started)
+            self._emit(Stage.ERROR, "Не распознал", str(exc))
+            self._sounds.play("error")
+            return
         record.whisper_s = round(time.monotonic() - heard, 2)
         record.raw = raw_text
         record.raw_words = len(raw_text.split())
@@ -318,6 +343,8 @@ class Pipeline(QObject):
                 record.stt = self._cloud.cfg.whisper_model
                 return text
             except CloudUnavailable as exc:
+                if self._lite:
+                    raise
                 print(f"[pipeline] облачный Whisper не ответил: {exc}; поднимаю локальный")
                 record.error = str(exc)
             finally:
@@ -335,7 +362,9 @@ class Pipeline(QObject):
             try:
                 return self._polish_cloud(raw_text, style, verb)
             except LLMUnavailable as exc:
-                if self._release_gpu or not self._llm.cfg.enabled:
+                if isinstance(exc, CloudLimited):
+                    self.limited.emit(exc.kind, exc.reset_s)
+                if self._lite or self._release_gpu or not self._llm.cfg.enabled:
                     raise
                 print(f"[pipeline] {exc}; пробую Ollama")
                 _note(record, exc.polished)
@@ -357,9 +386,13 @@ class Pipeline(QObject):
         """
         wait = self._cloud.wait_for_polish(raw_text, style)
         if wait is None:
-            raise LLMUnavailable("облако: исчерпан суточный лимит")
+            quota = self._cloud.quota
+            raise CloudLimited(
+                "облако: исчерпан суточный лимит", "day",
+                max(1.0, quota.requests_reset_s - quota.age_s),
+            )
         if wait > self._MAX_QUOTA_WAIT_S:
-            raise LLMUnavailable(f"облако: лимит минуты, сброс через {wait:.0f} с")
+            raise CloudLimited(f"облако: лимит минуты, сброс через {wait:.0f} с", "minute", wait)
         if wait > 0:
             self._emit(Stage.POLISHING, "Жду лимит облака", f"{wait:.0f} с")
             time.sleep(wait)
