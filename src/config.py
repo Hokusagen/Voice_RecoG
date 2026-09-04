@@ -314,24 +314,61 @@ class Config:
         """
         path = path or CONFIG_PATH
         cfg = cls()
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return cfg
-        except (OSError, ValueError) as exc:
-            print(f"[config] не удалось прочитать {path}: {exc}; беру значения по умолчанию")
-            return cfg
-        _merge_into(cfg, raw)
+        raw = _read(path)
+        if raw is not None:
+            _merge_into(cfg, raw)
+        cfg._loaded = asdict(cfg)
         return cfg
 
     def save(self, path: Path | None = None) -> None:
+        """Пишет настройки, не затирая правки, сделанные в файле руками.
+
+        Пока приложение работает, пользователь может вписать в файл ключ
+        облака или поменять промпт. Если после этого щёлкнуть что-то в трее,
+        наивная запись из памяти стёрла бы его правку — так однажды пропал
+        только что вставленный ключ. Поэтому сливаем три версии: то, что
+        было при загрузке, то, что в памяти, и то, что в файле сейчас.
+        Побеждает та сторона, которая значение изменила; если обе — трей,
+        потому что это последнее действие человека.
+        """
         path = path or CONFIG_PATH
+        current = asdict(self)
+        on_disk = _read(path)
+        loaded = getattr(self, "_loaded", None)
+        if on_disk is not None and loaded is not None:
+            current = _three_way(loaded, current, on_disk)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(asdict(self), ensure_ascii=False, indent=2)
-            path.write_text(payload, encoding="utf-8")
+            path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
             print(f"[config] не удалось сохранить {path}: {exc}")
+            return
+        self._loaded = current
+        _merge_into(self, current)
+
+
+def _read(path: Path) -> dict | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        print(f"[config] не удалось прочитать {path}: {exc}; беру значения по умолчанию")
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _three_way(loaded: dict, memory: dict, disk: dict) -> dict:
+    """Слияние по ключам: изменённое в памяти против изменённого в файле."""
+    result = dict(memory)
+    for key, mem_value in memory.items():
+        old_value = loaded.get(key)
+        disk_value = disk.get(key, old_value)
+        if isinstance(mem_value, dict) and isinstance(disk_value, dict) and isinstance(old_value, dict):
+            result[key] = _three_way(old_value, mem_value, disk_value)
+        elif mem_value == old_value and disk_value != old_value:
+            result[key] = disk_value
+    return result
 
 
 def _merge_into(target: Any, raw: dict) -> None:
