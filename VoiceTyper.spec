@@ -42,10 +42,21 @@ for package in packages:
     binaries += package_binaries
     hiddenimports += package_hidden
 
-# CUDA-библиотеки отдельно класть не нужно: collect_all("ctranslate2") уже
-# положил их рядом с самим расширением, а Windows ищет зависимости в каталоге
-# загружаемого модуля. Копия в nvidia/<пакет>/bin ради core.cuda_paths удваивала
-# бы сборку — только cudnn весит около гигабайта.
+# CUDA-библиотеки кладутся рядом с ctranslate2.dll: Windows ищет зависимости в
+# каталоге загружаемого модуля. Из pip они приходят в nvidia/<пакет>/bin, далеко
+# от расширения, поэтому на чистой машине (и на раннере GitHub) их надо
+# перенести явно; если они уже лежат в пакете ctranslate2, повтор пропускается.
+# Копия в nvidia/<пакет>/bin ради core.cuda_paths удваивала бы сборку — только
+# cudnn весит около гигабайта.
+if sys.platform == "win32" and not LITE:
+    import sysconfig
+
+    already = {os.path.basename(src).lower() for src, _dest in binaries}
+    nvidia_dir = os.path.join(sysconfig.get_paths()["purelib"], "nvidia")
+    for dll in sorted(glob.glob(os.path.join(nvidia_dir, "*", "bin", "*.dll"))):
+        if os.path.basename(dll).lower() not in already:
+            binaries.append((dll, "ctranslate2"))
+            already.add(os.path.basename(dll).lower())
 
 # Шрифты подключаются во время работы, в анализ импортов не попадают.
 # ui.theme ищет их относительно sys._MEIPASS, поэтому раскладка должна совпадать
