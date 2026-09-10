@@ -17,3 +17,9 @@ models/
 # Локальные настройки и история
 config.json
 history.json
+
+# Номер сборки: впечатывается build.py на время работы PyInstaller
+src/_build.py
+
+# Ярлык: пути в нём принадлежат конкретной машине, делается shortcut.py
+*.lnk

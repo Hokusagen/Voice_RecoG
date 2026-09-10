@@ -21,13 +21,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from config import APP_VERSION  # noqa: E402  — путь настраивается выше
+from config import APP_VERSION, build_version  # noqa: E402  — путь настраивается выше
 
 SPEC = ROOT / "VoiceTyper.spec"
 LITE = "--lite" in sys.argv
 NAME = "VoiceTyper-lite" if LITE else "VoiceTyper"
 EXE = ROOT / "dist" / NAME / f"{NAME}.exe"
 CHANGELOG = ROOT / "CHANGELOG.md"
+
+#: Номер сборки впечатывается сюда на время работы PyInstaller: внутри готового
+#: приложения нет ни git, ни репозитория, и посчитать его там уже нечем.
+#: Файл временный и в git не попадает — из исходников номер берётся у git.
+BUILD_MODULE = ROOT / "src" / "_build.py"
 
 
 def head_note() -> str:
@@ -104,18 +109,27 @@ def main(argv: list[str]) -> int:
     started = time.monotonic()
     print("\n  PyInstaller пошёл, это минуты…\n")
     env = dict(os.environ, VOICETYPER_LITE="1" if LITE else "", VOICETYPER_VERSION=APP_VERSION)
-    result = subprocess.run(
-        [str(ROOT / "venv" / "Scripts" / "pyinstaller.exe"), str(SPEC), "--noconfirm"],
-        cwd=ROOT,
-        env=env,
-    )
+    build = build_version()
+    BUILD_MODULE.write_text(f'BUILD = "{build}"\n', encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [str(ROOT / "venv" / "Scripts" / "pyinstaller.exe"), str(SPEC), "--noconfirm"],
+            cwd=ROOT,
+            env=env,
+        )
+    finally:
+        # Иначе запуск из исходников показывал бы номер, застывший на момент
+        # последней сборки, вместо настоящего.
+        BUILD_MODULE.unlink(missing_ok=True)
     if result.returncode != 0:
         print(f"\n  сборка провалилась, код {result.returncode}")
         return result.returncode
 
     took = time.monotonic() - started
     print(f"\n  Готово за {took / 60:.1f} мин: {EXE}")
-    print(f"  версия {APP_VERSION}, каталог {size_mb(EXE.parent):.0f} МБ")
+    print(f"  версия {build}, каталог {size_mb(EXE.parent):.0f} МБ")
+    if ".dirty" in build:
+        print("  ⚠ собрано с несохранёнными правками — по номеру такую сборку не воспроизвести")
 
     if run_after:
         subprocess.Popen([str(EXE)], cwd=EXE.parent)

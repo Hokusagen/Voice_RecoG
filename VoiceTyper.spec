@@ -25,6 +25,8 @@ from PyInstaller.utils.hooks import collect_all
 LITE = os.environ.get("VOICETYPER_LITE", "").strip() not in ("", "0")
 NAME = "VoiceTyper-lite" if LITE else "VoiceTyper"
 
+ICON = os.path.join("assets", "voicetyper.ico")
+
 datas = []
 binaries = []
 hiddenimports = []
@@ -105,6 +107,10 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Тот же микрофон, что в трее; файл рисует shortcut.py. Без него .exe
+    # ходит с иконкой PyInstaller по умолчанию, и на панели задач его не
+    # отличить от любой другой сборки.
+    icon=ICON if sys.platform == "win32" and os.path.exists(ICON) else None,
 )
 coll = COLLECT(
     exe,

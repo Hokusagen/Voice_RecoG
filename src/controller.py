@@ -8,7 +8,7 @@ import subprocess
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
-from config import APP_VERSION, CONFIG_PATH, Config
+from config import CONFIG_PATH, Config, build_version
 from core import autostart
 from core.audio import AudioError, AudioRecorder
 from core.cloud import CloudClient
@@ -120,7 +120,7 @@ class Controller(QObject):
         if self.cfg.llm.backend == "cloud" and not self.cloud.configured:
             print("[cloud] выбрано облако, но cloud.api_key пуст — правлю локально")
         self.tray.set_history(self.history)
-        self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}")
+        self.tray.setToolTip(f"Голосовой ввод {build_version()} · {self.cfg.hotkeys.record.upper()}")
         self.tray.show()
 
         self.pipeline.start()
@@ -267,7 +267,7 @@ class Controller(QObject):
         self._ready = True
         summary = f"{self.whisper.model_name or self.cfg.whisper.model} · {where}"
         self.tray.set_summary(summary)
-        self.tray.setToolTip(f"Голосовой ввод {APP_VERSION} · {self.cfg.hotkeys.record.upper()}\n{summary}")
+        self.tray.setToolTip(f"Голосовой ввод {build_version()} · {self.cfg.hotkeys.record.upper()}\n{summary}")
         self.sounds.play("ready")
         self._show(Stage.DONE, "Готов к работе", f"зажмите {self.cfg.hotkeys.record.upper()}")
 

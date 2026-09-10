@@ -97,6 +97,22 @@ def _draw_mic(painter: QPainter, box: QRectF, color: QColor) -> None:
     )
 
 
+def app_icon(size: int = 256) -> QIcon:
+    """Иконка приложения для ярлыка Windows — тот же микрофон, что в трее.
+
+    Рисунок задан числами под _SIZE, поэтому крупный вариант получается
+    масштабированием, а не вторым набором координат: иначе ярлык и трей
+    разъехались бы при первой же правке рисунка.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = _painter(pixmap)
+    painter.scale(size / _SIZE, size / _SIZE)
+    _draw_mic(painter, QRectF(10, 10, _SIZE - 20, _SIZE - 20), theme.accent(Stage.IDLE))
+    painter.end()
+    return QIcon(pixmap)
+
+
 class Tray(QSystemTrayIcon):
     pause_toggled = Signal(bool)
     gpu_toggled = Signal(bool)

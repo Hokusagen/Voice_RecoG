@@ -10,18 +10,77 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 APP_NAME = "VoiceTyper"
 APP_VERSION = "0.7.0"
-"""Единственное место, где живёт номер версии.
+"""Релизный номер: он же в CHANGELOG.md и в теге, по которому собирается релиз.
 
-Попадает в подсказку трея и в каждую запись журнала: по записи всегда
-видно, какая сборка её сделала. Меняется вместе с записью в CHANGELOG.md.
+Меняется руками — тогда, когда есть что дописать в историю версий. Показывать
+его человеку не надо, для этого есть BUILD_VERSION.
 """
+
+#: Не показывать консольное окно на вызовах git: приложение запускается из
+#: pythonw.exe и из собранного .exe, у которых консоли нет, и она мигала бы
+#: чёрным прямоугольником поверх экрана при каждом старте.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
+def _git(*args: str) -> str:
+    """Короткий вызов git в каталоге проекта. Пусто, если git не ответил."""
+    root = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            timeout=2.0,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.decode("utf-8", "replace").strip()
+
+
+@lru_cache(maxsize=1)
+def build_version() -> str:
+    """Номер того, что запущено прямо сейчас: «0.7.0+27.be61a8c».
+
+    APP_VERSION поднимается руками и потому отстаёт: под номером 0.5.0 вышло
+    шесть коммитов, включая весь порт на macOS. По подсказке трея нельзя было
+    понять, сегодняшний это код или недельной давности. Здесь к номеру
+    приписывается то, что git знает и без нас: сколько всего коммитов набралось
+    и на каком мы стоим, — и номер меняется сам с каждым коммитом. Суффикс
+    .dirty значит, что поверх коммита лежат несохранённые правки.
+
+    Три вызова git — это полторы десятых секунды, поэтому считается по первому
+    спросу и запоминается: журналу и трею номер нужен, а build.py и отчёту он
+    достаётся бесплатно, если они не спросят.
+
+    В собранном приложении git недоступен: там ни репозитория, ни самого git.
+    Поэтому build.py впечатывает посчитанный номер в модуль _build.
+    """
+    if getattr(sys, "frozen", False):
+        try:
+            from _build import BUILD
+        except ImportError:
+            return APP_VERSION
+        return BUILD or APP_VERSION
+
+    head = _git("rev-parse", "--short", "HEAD")
+    if not head:
+        return APP_VERSION
+    count = _git("rev-list", "--count", "HEAD")
+    # -uno: неотслеживаемые файлы кодом не считаем, иначе первый же отчёт,
+    # оставленный рядом с проектом, объявил бы сборку изменённой.
+    dirty = ".dirty" if _git("status", "--porcelain", "-uno") else ""
+    return f"{APP_VERSION}+{count}.{head}{dirty}"
 
 DEFAULT_SYSTEM_PROMPT = """Ты — строгий автоматический редактор транскрипций. Ты НЕ переписываешь текст, ты вычищаешь из него мусор.
 

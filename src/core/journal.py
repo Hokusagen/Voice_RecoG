@@ -29,7 +29,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from config import APP_VERSION, app_data_dir
+from config import app_data_dir, build_version
 
 
 def now() -> str:
@@ -93,7 +93,7 @@ class Record:
     0.6.0 поля нет — они все диктовки."""
 
     at: str = field(default_factory=now)
-    version: str = APP_VERSION
+    version: str = field(default_factory=build_version)
     """Какая сборка сделала запись: без этого поля старые записи не отличить."""
 
     audio_s: float = 0.0
@@ -167,7 +167,7 @@ class Correction:
 
     kind: str = "correction"
     at: str = field(default_factory=now)
-    version: str = APP_VERSION
+    version: str = field(default_factory=build_version)
 
     was: str = ""
     """Кусок вставленного текста, которому нашлось соответствие."""
