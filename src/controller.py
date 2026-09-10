@@ -52,7 +52,7 @@ class Controller(QObject):
         self.hotkeys = HotkeyListener(cfg.hotkeys)
 
         self.pipeline = Pipeline(
-            self.whisper, self.llm, self.paster, self.sounds, cfg.audio.sample_rate,
+            self.whisper, self.llm, self.paster, self.sounds, cfg.audio,
             journal_log=self.journal, release_gpu=cfg.release_gpu, cloud=self.cloud,
         )
 

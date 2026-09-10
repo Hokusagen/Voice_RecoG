@@ -193,7 +193,7 @@ Whisper и Ollama вместе занимают около 3.5 ГБ видеоп
 | `whisper.compute_type` | `int8_float16` экономит вдвое видеопамяти против `float16` |
 | `whisper.initial_prompt` | Термины вашей предметной области — Whisper распознает их точнее |
 | `llm.enabled` | Выключить постобработку целиком |
-| `llm.journal` | Журнал диктовок в `dictations.jsonl`: сырой текст, правка модели, тайминги |
+| `llm.journal` | Журнал диктовок в `dictations.jsonl`: сырой текст, попытки правки, тайминги, приложение-получатель и качество записи. Сводка — `python src/journal_report.py` |
 | `llm.system_prompt` | Правила бережной правки |
 | `llm.dry_prompt` | Правила сухой правки |
 | `llm.style` | Стиль по основной клавише: `careful` или `dry` |

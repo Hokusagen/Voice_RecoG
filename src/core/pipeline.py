@@ -16,12 +16,14 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
+from config import AudioConfig
 from core import journal
 from core import stt
+from core.audio import loudness
 from core.cloud import CloudClient, CloudLimited, CloudUnavailable
-from core.journal import Journal, Record
+from core.journal import Attempt, Journal, Record
 from core.llm import LLMUnavailable, OllamaClient, Polished
-from core.paster import ClipboardError, Paster
+from core.paster import ClipboardError, Paster, active_app
 from core.state import Stage, Status
 from core.stt import WhisperEngine
 
@@ -75,7 +77,7 @@ class Pipeline(QObject):
         llm: OllamaClient,
         paster: Paster,
         sounds,
-        sample_rate: int,
+        audio: AudioConfig,
         journal_log: Journal | None = None,
         release_gpu: bool = False,
         cloud: CloudClient | None = None,
@@ -90,7 +92,8 @@ class Pipeline(QObject):
         self._llm = llm
         self._paster = paster
         self._sounds = sounds
-        self._sample_rate = sample_rate
+        self._audio = audio
+        self._sample_rate = audio.sample_rate
         self._journal = journal_log or Journal(enabled=False)
 
         self._queue: queue.Queue = queue.Queue()
@@ -261,7 +264,11 @@ class Pipeline(QObject):
     def _process(self, job: Job) -> None:
         seconds = len(job.audio) / self._sample_rate
         started = time.monotonic()
-        record = Record(at=journal.now(), audio_s=round(seconds, 2), hotkey=job.hotkey)
+        record = Record(audio_s=round(seconds, 2), hotkey=job.hotkey)
+
+        sound = loudness(job.audio, self._sample_rate, self._audio.silence_rms)
+        record.rms, record.peak = sound.rms, sound.peak
+        record.clipped, record.silence = sound.clipped, sound.silence
 
         self._emit(Stage.TRANSCRIBING, "Распознаю", f"{seconds:.1f} с записи")
         heard = time.monotonic()
@@ -304,14 +311,12 @@ class Pipeline(QObject):
                 polished = self._polish(raw_text, job.style or "careful", verb, record)
             except LLMUnavailable as exc:
                 warning = str(exc)
-                record.error = warning
-                # Отклонённый ответ журналу нужен не меньше принятого: по нему
-                # видно, на чём именно модель срывается.
-                _note(record, exc.polished)
             else:
                 text = polished.text
-                _note(record, polished)
 
+        # Снимаем перед самой вставкой: текст уходит в то окно, которое на
+        # переднем плане сейчас, а не в то, из которого начали диктовать.
+        record.app = active_app()
         try:
             self._paster.paste(text, hotkey=job.hotkey)
         except ClipboardError as exc:
@@ -322,7 +327,8 @@ class Pipeline(QObject):
             return
 
         record.final = text
-        record.changed_words = journal.count_changes(raw_text, text)
+        record.changes = journal.diff_words(raw_text, text)
+        record.changed_words = journal.count_changes(record.changes)
         if self._cloud is not None and self._cloud.quota.known:
             record.cloud_quota = self._cloud.quota_line()
         took = self._close(record, started)
@@ -348,7 +354,7 @@ class Pipeline(QObject):
                 if self._lite:
                     raise
                 print(f"[pipeline] облачный Whisper не ответил: {exc}; поднимаю локальный")
-                record.error = str(exc)
+                record.stt_error = str(exc)
             finally:
                 self.quota.emit(self._cloud.quota_line())
         if not self._whisper.is_loaded:
@@ -358,23 +364,37 @@ class Pipeline(QObject):
         return self._whisper.transcribe(audio)
 
     def _polish(self, raw_text: str, style: str, verb: str, record: Record) -> Polished:
-        """Правка облаком с откатом на Ollama — или сразу Ollama."""
+        """Правка облаком с откатом на Ollama — или сразу Ollama.
+
+        Каждая попытка ложится в запись отдельно, включая сорвавшуюся: иначе по
+        журналу выходит, что откат не случился вовсе и время на него не ушло.
+        """
         if self._cloud_llm:
-            record.llm_model = self._cloud.label
             try:
-                return self._polish_cloud(raw_text, style, verb)
+                polished = self._polish_cloud(raw_text, style, verb)
             except LLMUnavailable as exc:
+                # Отклонённый ответ журналу нужен не меньше принятого: по нему
+                # видно, на чём именно модель срывается.
+                _note_attempt(record, self._cloud.label, exc.polished, str(exc))
                 if isinstance(exc, CloudLimited):
                     self.limited.emit(exc.kind, exc.reset_s)
                 if self._lite or self._release_gpu or not self._llm.cfg.enabled:
                     raise
                 print(f"[pipeline] {exc}; пробую Ollama")
-                _note(record, exc.polished)
+            else:
+                _note_attempt(record, self._cloud.label, polished)
+                return polished
             finally:
                 self.quota.emit(self._cloud.quota_line())
-        record.llm_model = self._llm.cfg.model
+
         self._emit(Stage.POLISHING, verb, self._llm.cfg.model)
-        return self._llm.polish(raw_text, style)
+        try:
+            polished = self._llm.polish(raw_text, style)
+        except LLMUnavailable as exc:
+            _note_attempt(record, self._llm.cfg.model, exc.polished, str(exc))
+            raise
+        _note_attempt(record, self._llm.cfg.model, polished)
+        return polished
 
     #: Дольше этого минутный лимит не ждём — быстрее ответит Ollama.
     _MAX_QUOTA_WAIT_S = 6.0
@@ -412,13 +432,20 @@ class Pipeline(QObject):
         self.status.emit(Status(stage=stage, title=title, detail=detail))
 
 
-def _note(record: Record, polished: Polished | None) -> None:
-    """Переносит в запись то, что модель рассказала о себе."""
-    if polished is None:
-        return
-    record.llm_s = round(polished.took_s, 2)
-    record.output_tokens = polished.output_tokens
-    record.gen_s = round(polished.gen_s, 3)
-    record.response = polished.response
-    record.polished = polished.text
-    record.accepted = polished.accepted
+def _note_attempt(
+    record: Record, model: str, polished: Polished | None, error: str = ""
+) -> None:
+    """Дописывает в запись то, что попытка правки рассказала о себе.
+
+    polished бывает пустым: до ответа модели дело могло не дойти вовсе — тогда
+    от попытки остаётся только имя модели и причина срыва.
+    """
+    attempt = Attempt(model=model, error=error)
+    if polished is not None:
+        attempt.took_s = round(polished.took_s, 2)
+        attempt.output_tokens = polished.output_tokens
+        attempt.gen_s = round(polished.gen_s, 3)
+        attempt.response = polished.response
+        attempt.text = polished.text
+        attempt.accepted = polished.accepted
+    record.attempts.append(attempt)

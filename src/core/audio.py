@@ -16,6 +16,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 import sounddevice as sd
@@ -180,3 +181,45 @@ class AudioRecorder:
 
     def is_silent(self) -> bool:
         return self._peak < self.cfg.silence_rms
+
+
+@dataclass(frozen=True)
+class Loudness:
+    """Как записалась фраза — чтобы отличить плохую модель от плохого микрофона.
+
+    Журнал сравнивает диктовки между собой, и без этих четырёх чисел любое
+    сравнение врёт: фраза, сказанная в сторону от микрофона, распознаётся хуже
+    не потому, что модель стала глупее.
+    """
+
+    rms: float
+    peak: float
+    clipped: float
+    """Доля отсчётов, упёршихся в потолок: больше нуля — вход перегружен."""
+
+    silence: float
+    """Доля фразы, проведённая в тишине: на длинных паузах Whisper дорисовывает."""
+
+
+def loudness(audio: np.ndarray, sample_rate: int, silence_rms: float) -> Loudness:
+    """Считает всё за один проход по массиву, который и так уже в памяти."""
+    if audio.size == 0:
+        return Loudness(0.0, 0.0, 0.0, 0.0)
+
+    square = np.square(audio, dtype=np.float32)
+    peak = float(np.max(np.abs(audio)))
+    rms = float(np.sqrt(np.mean(square)))
+    # 0.999, а не 1.0: до самой единицы отсчёт не доходит из-за квантования,
+    # но упёршийся в потолок сигнал слышно уже здесь.
+    clipped = float(np.mean(np.abs(audio) >= 0.999))
+
+    # Тишину считаем окнами по 30 мс — тем же шагом, каким звук приходит
+    # с микрофона, чтобы порог silence_rms значил ровно то же, что в записи.
+    window = max(1, int(sample_rate * 0.03))
+    tail = audio.size - audio.size % window
+    quiet = 0.0
+    if tail:
+        frames = np.sqrt(np.mean(square[:tail].reshape(-1, window), axis=1))
+        quiet = float(np.mean(frames < silence_rms))
+
+    return Loudness(round(rms, 4), round(peak, 4), round(clipped, 4), round(quiet, 3))
