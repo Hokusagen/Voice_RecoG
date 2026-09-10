@@ -30,6 +30,9 @@ from config import HotkeysConfig
 #: иначе одно нажатие поднимет сразу оба.
 _ACTIONS = ("record_raw", "record_alt", "record")
 
+#: Действия-нажатия: срабатывают в момент нажатия и запись не держат.
+_TAPS = ("correct",)
+
 #: Синонимы модификаторов из конфига: люди пишут «control», «win», «command».
 _ALIASES = {
     "control": "ctrl",
@@ -52,11 +55,15 @@ class HotkeyListener(QObject):
     released = Signal(str)
     cancelled = Signal()
 
+    tapped = Signal(str)
+    """Действие из _TAPS: одно срабатывание на нажатие, без пары «отпустили»."""
+
     def __init__(self, cfg: HotkeysConfig) -> None:
         super().__init__()
         self.cfg = cfg
         self._enabled = True
         self._active: str | None = None
+        self._fired: set[str] = set()
         self._backend: _Backend | None = None
 
         self._keys: dict[str, frozenset[str]] = {}
@@ -70,7 +77,7 @@ class HotkeyListener(QObject):
     def start(self) -> None:
         combos = {
             name: getattr(self.cfg, name, "").strip().lower()
-            for name in _ACTIONS
+            for name in _ACTIONS + _TAPS
             if getattr(self.cfg, name, "").strip()
         }
         self._keys = {
@@ -86,6 +93,7 @@ class HotkeyListener(QObject):
             self._watched.add(self._cancel_key)
 
         self._down.clear()
+        self._fired.clear()
         self._backend = _make_backend(self._on_key)
         self._backend.start()
         if self.cfg.suppress:
@@ -124,6 +132,12 @@ class HotkeyListener(QObject):
             self._reevaluate(is_down)
 
     def _reevaluate(self, is_down: bool) -> None:
+        # Отметку о сработавшем нажатии держим, пока зажата хоть одна его
+        # клавиша. Она гасит два эффекта сразу: автоповтор клавиатуры, который
+        # шлёт «нажато» десятки раз подряд, и наше же освобождение модификаторов
+        # перед Ctrl+C — без отметки оставшаяся F8 тут же подняла бы диктовку.
+        self._fired = {name for name in self._fired if self._keys[name] & self._down}
+
         if self._active is not None:
             if not self._keys[self._active] <= self._down:
                 name, self._active = self._active, None
@@ -132,12 +146,16 @@ class HotkeyListener(QObject):
 
         # Новое действие начинается только по нажатию: иначе после снятия паузы
         # с зажатой клавишей его запустило бы любое нажатие модификатора.
-        if not is_down:
+        if not is_down or self._fired:
             return
         for action in self._order:
             if self._keys[action] <= self._down:
-                self._active = action
-                self.pressed.emit(action)
+                if action in _TAPS:
+                    self._fired.add(action)
+                    self.tapped.emit(action)
+                else:
+                    self._active = action
+                    self.pressed.emit(action)
                 return
 
 

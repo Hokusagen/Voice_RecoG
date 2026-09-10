@@ -108,7 +108,7 @@ else:
         _xclip(["-i"], text.encode("utf-8"))
 
 
-# ---------- нажатие «вставить» ----------
+# ---------- нажатия «вставить» и «копировать» ----------
 
 if sys.platform == "win32":
     import keyboard
@@ -116,8 +116,8 @@ if sys.platform == "win32":
     def _release(name: str) -> None:
         keyboard.release(name)
 
-    def _send_paste() -> None:
-        keyboard.send("ctrl+v")
+    def _send(letter: str) -> None:
+        keyboard.send(f"ctrl+{letter}")
 
 else:
     from pynput.keyboard import Controller, Key
@@ -133,11 +133,11 @@ else:
         if key is not None:
             _controller.release(key)
 
-    def _send_paste() -> None:
+    def _send(letter: str) -> None:
         modifier = Key.cmd if sys.platform == "darwin" else Key.ctrl
         with _controller.pressed(modifier):
-            _controller.press("v")
-            _controller.release("v")
+            _controller.press(letter)
+            _controller.release(letter)
 
 
 # ---------- кто на переднем плане ----------
@@ -218,6 +218,47 @@ def _release_modifiers(hotkey: str) -> None:
                 pass
 
 
+#: Метка, по которой видно, скопировалось ли хоть что-то. Ctrl+C при пустом
+#: выделении молча оставляет в буфере прежнее содержимое, и без метки мы
+#: приняли бы за правку то, что человек копировал час назад.
+_PROBE = "\x00voicetyper\x00"
+
+
+def grab_selection(hotkey: str = "", timeout_s: float = 0.6) -> str:
+    """Копирует выделенное в активном окне и возвращает текст.
+
+    Буфер обмена после этого остаётся таким же, каким был: он общий, и
+    забирать его ради записи в журнал было бы наглостью.
+
+    Ждём появления копии, а не спим фиксированное время: большинство окон
+    отдают выделение за десяток миллисекунд, а редкие тяжёлые — за половину
+    секунды, и подгонять одну задержку под тех и других нечем.
+    """
+    previous = read_text()
+    write_text(_PROBE)
+
+    if hotkey:
+        _release_modifiers(hotkey)
+    _send("c")
+
+    text: str | None = None
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        text = read_text()
+        if text is not None and text != _PROBE:
+            break
+
+    copied = text is not None and text != _PROBE
+    if previous is not None:
+        write_text(previous)
+    elif not copied:
+        # Метку за собой не оставляем. Если же копия удалась, в буфере лежит
+        # выделение человека — ровно то, что он получил бы сам по Ctrl+C.
+        write_text("")
+    return text if copied else ""
+
+
 class Paster:
     def __init__(self, cfg) -> None:
         self.cfg = cfg
@@ -242,7 +283,7 @@ class Paster:
 
         if hotkey:
             _release_modifiers(hotkey)
-        _send_paste()
+        _send("v")
 
         if had_text:
             # Возврат буфера ждёт треть секунды, пока приложение дочитает

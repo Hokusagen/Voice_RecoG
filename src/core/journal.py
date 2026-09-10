@@ -7,7 +7,9 @@
 
 Формат построчный намеренно: дописывается без перечитывания файла, читается
 частями и переживает обрыв записи — битой окажется одна последняя строка, а не
-весь журнал.
+весь журнал. По той же причине правка, сделанная руками через минуту после
+вставки, не дописывается в старую строку, а ложится своей — со ссылкой на ключ
+диктовки в поле of.
 
 Эталона у нас нет, и правильность правки журнал не измеряет. Зато он измеряет
 объём вмешательства: какие слова модель тронула и сколько их. На чистом входе
@@ -86,6 +88,10 @@ class Record:
     id: str = field(default_factory=new_id)
     """Ключ, по которому к диктовке цепляется правка, сделанная руками потом."""
 
+    kind: str = "dictation"
+    """Вид записи: в одном файле с диктовками лежат и правки. У записей до
+    0.6.0 поля нет — они все диктовки."""
+
     at: str = field(default_factory=now)
     version: str = APP_VERSION
     """Какая сборка сделала запись: без этого поля старые записи не отличить."""
@@ -146,6 +152,41 @@ class Record:
     total_s: float = 0.0
 
 
+@dataclass
+class Correction:
+    """Правка, сделанная руками уже после вставки.
+
+    Отвечает на вопрос, на который не отвечает больше ничто в журнале: какое
+    слово не разобрал ни Whisper, ни модель. Всё остальное в журнале — это
+    спор машины с машиной, здесь же есть человек, который знает, как было
+    сказано на самом деле.
+    """
+
+    of: str = ""
+    """Ключ диктовки, к которой относится правка."""
+
+    kind: str = "correction"
+    at: str = field(default_factory=now)
+    version: str = APP_VERSION
+
+    was: str = ""
+    """Кусок вставленного текста, которому нашлось соответствие."""
+
+    fixed: str = ""
+    """Тот же кусок после правки руками."""
+
+    changes: list[Change] = field(default_factory=list)
+    changed_words: int = 0
+
+    match: float = 0.0
+    """Насколько уверенно выделенное опознали как эту диктовку, 0..1. Низкое
+    значение — повод перечитать запись глазами, прежде чем ей верить."""
+
+    app: str = ""
+    ago_s: float = 0.0
+    """Сколько прошло между вставкой и правкой."""
+
+
 class Journal:
     """Дописывает записи в dictations.jsonl, переживая любые сбои записи."""
 
@@ -158,7 +199,7 @@ class Journal:
     def path(self) -> Path:
         return self._path
 
-    def write(self, record: Record) -> None:
+    def write(self, record: Record | Correction) -> None:
         """Сбой журнала не должен стоить человеку продиктованной фразы."""
         if not self.enabled:
             return
@@ -169,6 +210,42 @@ class Journal:
                 handle.write(line + "\n")
         except OSError as exc:
             print(f"[journal] не удалось записать: {exc}")
+
+    def recent(self, limit: int = 20, window_kb: int = 256) -> list[dict]:
+        """Последние диктовки, свежие первыми.
+
+        Читает только хвост файла: журнал растёт до десятков мегабайт, а нужны
+        всегда последние несколько записей. Первая строка окна почти наверняка
+        обрезана посередине — её отбрасываем.
+        """
+        start = 0
+        try:
+            size = self._path.stat().st_size
+            with self._path.open("rb") as handle:
+                start = max(0, size - window_kb * 1024)
+                handle.seek(start)
+                chunk = handle.read()
+        except OSError:
+            return []
+
+        lines = chunk.decode("utf-8", "ignore").splitlines()
+        if start and lines:
+            lines = lines[1:]
+
+        rows: list[dict] = []
+        for line in reversed(lines):
+            if len(rows) >= limit:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("kind", "dictation") == "dictation":
+                rows.append(row)
+        return rows
 
     def _rotate_if_big(self) -> None:
         """При переполнении оставляем ровно одно предыдущее поколение.
@@ -193,7 +270,7 @@ class Journal:
 _MARKS = str.maketrans("", "", ".,!?…:;\"'«»()")
 
 
-def _key(word: str) -> str:
+def word_key(word: str) -> str:
     """По чему сравниваем слова.
 
     Расставить точки и заглавные — прямая обязанность модели по промпту, и
@@ -215,7 +292,7 @@ def diff_words(before: str, after: str) -> list[Change]:
         return []
     a, b = before.split(), after.split()
     matcher = difflib.SequenceMatcher(
-        None, [_key(word) for word in a], [_key(word) for word in b], autojunk=False
+        None, [word_key(word) for word in a], [word_key(word) for word in b], autojunk=False
     )
     return [
         Change(was=" ".join(a[i1:i2]), now=" ".join(b[j1:j2]))

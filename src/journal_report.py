@@ -20,6 +20,7 @@ from collections import Counter
 from pathlib import Path
 
 from config import app_data_dir
+from core.journal import word_key
 
 #: До скольких слов замену считаем «не расслышал», а не «переписал заново».
 _SHORT = 3
@@ -98,7 +99,11 @@ def main(argv: list[str]) -> int:
         print(f"журнала нет: {path}")
         return 1
 
-    rows = load(path)
+    lines = load(path)
+    # Правки лежат в том же файле отдельными строками: у них нет ни таймингов,
+    # ни попыток, и в статистику диктовок им нельзя.
+    fixes = [r for r in lines if r.get("kind") == "correction"]
+    rows = [r for r in lines if r.get("kind", "dictation") == "dictation"]
     if not rows:
         print("журнал пуст")
         return 1
@@ -166,6 +171,7 @@ def main(argv: list[str]) -> int:
     if words:
         print(f"  глубина вмешательства: {touched} из {words} слов ({100 * touched / words:.1f}%)")
 
+    _corrections(fixes, rows)
     _changes(applied)
     _strongest(applied)
     _apps(rows)
@@ -183,6 +189,68 @@ def main(argv: list[str]) -> int:
             print(f"    {r['at']}: {attempts(r)[-1]['response'][:120]!r}")
 
     return 0
+
+
+def _corrections(fixes: list[dict], rows: list[dict]) -> None:
+    """Правки руками — единственное место в журнале, где есть эталон.
+
+    Здесь же видно, кто из двоих ошибся: если правильное слово стояло уже в
+    сыром тексте Whisper, значит, его испортил редактор, а если не стояло —
+    не расслышал Whisper. Разбор приблизительный: слово ищется по всему сырому
+    тексту, а не на своём месте. Перекос в одну из сторон он ловит, отдельную
+    запись — нет, её надо читать глазами.
+    """
+    if not fixes:
+        return
+    block("Правки руками")
+    print(f"  записано: {len(fixes)} на {len(rows)} диктовок")
+
+    sources = {row["id"]: row for row in rows if row.get("id")}
+    pairs: Counter[str] = Counter()
+    blame: Counter[str] = Counter()
+    for fix in fixes:
+        source = sources.get(fix.get("of"))
+        heard = {word_key(w) for w in (source.get("raw") or "").split()} if source else set()
+        for change in fix.get("changes") or []:
+            was = change.get("was", "").strip(_EDGE)
+            now = change.get("now", "").strip(_EDGE)
+            if len(was.split()) <= _SHORT and len(now.split()) <= _SHORT:
+                # Стрелка в пустоту читается сама: слева — что убрали руками,
+                # справа — что дописали, потому что до текста оно не доехало.
+                pairs[f"{was} → {now}".strip()] += 1
+            if not heard or not now:
+                continue
+            was_heard = all(word_key(w) in heard for w in now.split())
+            blame["испортил редактор" if was_heard else "не расслышал Whisper"] += 1
+
+    if pairs:
+        print("  что приходилось исправлять:")
+        table(pairs.most_common())
+    if blame:
+        print("  чья ошибка:")
+        for who, count in blame.most_common():
+            print(f"    {count:3d} × {who}")
+
+    # Короткое выделение опознаётся по нескольким словам, и доля совпавших у
+    # него низкая сама по себе — это не обязательно промах, но проверить стоит.
+    weak = [f for f in fixes if f.get("match", 1.0) < 0.75]
+    if weak:
+        print(f"  ⚠ опознано по малому числу слов: {len(weak)} — стоит перечитать глазами")
+
+    print("  последние:")
+    for fix in fixes[-3:]:
+        print(f"\n    {fix['at']}  {_ago_label(fix.get('ago_s', 0.0))} после диктовки"
+              f"   {fix.get('app', '')}")
+        print(f"      вставилось: {fix.get('was', '')[:150]}")
+        print(f"      исправлено: {fix.get('fixed', '')[:150]}")
+
+
+def _ago_label(seconds: float) -> str:
+    if seconds < 120:
+        return f"через {seconds:.0f} с"
+    if seconds < 7200:
+        return f"через {seconds / 60:.0f} мин"
+    return f"через {seconds / 3600:.0f} ч"
 
 
 def _changes(applied: list[dict]) -> None:

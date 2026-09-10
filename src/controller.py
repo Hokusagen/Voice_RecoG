@@ -12,6 +12,7 @@ from config import APP_VERSION, CONFIG_PATH, Config
 from core import autostart
 from core.audio import AudioError, AudioRecorder
 from core.cloud import CloudClient
+from core.corrections import Corrector, describe
 from core.history import History
 from core.journal import Journal
 from core.hotkeys import HotkeyListener
@@ -44,6 +45,7 @@ class Controller(QObject):
         self.sounds = SoundBoard(enabled=cfg.ui.sounds, volume=cfg.ui.volume)
         self.history = History(cfg.ui.history_size)
         self.journal = Journal(cfg.llm.journal, cfg.llm.journal_max_mb)
+        self.corrector = Corrector(self.journal)
 
         self.hud = Hud(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
@@ -86,6 +88,10 @@ class Controller(QObject):
         self.hotkeys.pressed.connect(self._on_pressed)
         self.hotkeys.released.connect(self._on_released)
         self.hotkeys.cancelled.connect(self._on_cancel)
+        self.hotkeys.tapped.connect(self._on_tapped)
+
+        self.corrector.noted.connect(self._on_correction)
+        self.corrector.missed.connect(self._on_correction_missed)
 
         self.pipeline.status.connect(self._on_status)
         self.pipeline.ready.connect(self._on_ready)
@@ -146,6 +152,27 @@ class Controller(QObject):
             return
         if self._action == action:
             self._finish_recording()
+
+    @Slot(str)
+    def _on_tapped(self, action: str) -> None:
+        if action != "correct":
+            return
+        if not self.cfg.llm.journal:
+            self._show(Stage.WARNING, "Журнал выключен", "правку записать некуда")
+            return
+        # Плашку до ответа не показываем: снятие выделения занимает доли
+        # секунды, и мелькнувшее «сейчас посмотрю» было бы лишним движением.
+        self.corrector.capture(self.cfg.hotkeys.correct)
+
+    @Slot(object)
+    def _on_correction(self, correction) -> None:
+        self.sounds.play("success")
+        self._show(Stage.DONE, "Запомнил правку", describe(correction))
+
+    @Slot(str)
+    def _on_correction_missed(self, reason: str) -> None:
+        self.sounds.play("error")
+        self._show(Stage.WARNING, "Правку не записал", reason)
 
     @Slot()
     def _on_cancel(self) -> None:
