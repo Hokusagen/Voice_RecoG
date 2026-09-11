@@ -120,11 +120,47 @@ class CloudClient:
         self.audio_quota = Quota()
         """Лимиты распознавания (audio/transcriptions): у Groq они отдельные."""
 
+        self._output_log: list[tuple[float, int]] = []
+        """Выходные токены последней минуты: OTPM сервер в заголовках не шлёт."""
+
     # ---------- лимиты ----------
 
     def tokens_needed(self, raw_text: str, style: str = "careful") -> int:
         system = self.llm_cfg.dry_prompt if style == "dry" else self.llm_cfg.system_prompt
         return _estimate_tokens(system, raw_text) + _estimate_tokens(raw_text)
+
+    def output_cap(self, raw_text: str) -> int:
+        """Сколько токенов разрешить ответу.
+
+        Правка возвращает примерно тот же текст, что и приняла, так что потолок
+        считаем по длине фразы с запасом на знаки — и не выше минутного лимита:
+        заявленный потолок выше него сервер отбивает, даже не начав отвечать.
+        """
+        cap = _estimate_tokens(raw_text) + len(raw_text) // 9
+        limit = self.cfg.output_tokens_per_minute
+        return min(cap, limit) if limit > 0 else cap
+
+    def _spend_output(self, tokens: int) -> None:
+        """Записывает расход: по заголовкам его не восстановить."""
+        if tokens > 0:
+            self._output_log.append((time.monotonic(), tokens))
+
+    def wait_for_output(self, cap: int) -> float:
+        """Сколько ждать, пока в минутном окне освободится место под ответ."""
+        limit = self.cfg.output_tokens_per_minute
+        if limit <= 0:
+            return 0.0
+        now = time.monotonic()
+        self._output_log = [(at, n) for at, n in self._output_log if now - at < 60.0]
+        spent = sum(n for _, n in self._output_log)
+        if spent + cap <= limit:
+            return 0.0
+        freed = 0
+        for at, tokens in self._output_log:
+            freed += tokens
+            if spent - freed + cap <= limit:
+                return max(0.5, 60.0 - (now - at))
+        return 60.0
 
     def wait_for_polish(self, raw_text: str, style: str = "careful") -> float | None:
         """Сколько секунд подождать до правки; 0 — можно сразу; None — лимит суток.
@@ -133,15 +169,16 @@ class CloudClient:
         хватает, возвращает время до их сброса.
         """
         quota = self.quota
+        output_wait = self.wait_for_output(self.output_cap(raw_text))
         if not quota.known:
-            return 0.0
+            return output_wait
         requests_left = quota.requests_now()
         if requests_left is not None and requests_left <= 0:
             return None
         tokens = quota.tokens_now()
         if tokens is None or tokens >= self.tokens_needed(raw_text, style):
-            return 0.0
-        return max(0.5, quota.tokens_reset_s - quota.age_s)
+            return output_wait
+        return max(output_wait, quota.tokens_reset_s - quota.age_s, 0.5)
 
     def quota_line(self) -> str:
         """Строка для трея: «облако: 982 из 1000 правок на сегодня · 7.9k ток/мин»."""
@@ -198,9 +235,10 @@ class CloudClient:
                 {"role": "user", "content": raw_text},
             ],
             "temperature": self.llm_cfg.temperature,
-            # Потолок щедрый: у рассуждающих моделей размышления тоже идут в
-            # счёт ответа, и тесный лимит обрывал текст на полуслове.
-            "max_tokens": 2048,
+            # Потолок считаем по длине фразы: в лимит OTPM у Groq идёт не
+            # фактический ответ, а это число, и щедрые 2048 отбивались отказом
+            # ещё до модели.
+            "max_tokens": self.output_cap(raw_text),
         }
         if "gpt-oss" in self.cfg.model:
             # Рассуждающая модель: на чистке текста думать не о чем, а каждая
@@ -238,6 +276,7 @@ class CloudClient:
             raise LLMUnavailable(self.last_error) from exc
 
         cleaned = _sanitize(result)
+        self._spend_output(int(usage.get("completion_tokens", 0)))
         took = time.monotonic() - started
         polished = Polished(
             text=cleaned,
@@ -326,16 +365,28 @@ def _describe(exc: Exception) -> str:
     return f"облако: {exc}"
 
 
+#: «...on output tokens per minute (OTPM): Limit 1000, Requested 1582» —
+#: название лимита из тела отказа.
+_LIMIT_NAME = re.compile(r" on ([^:]+):")
+
+
 def _http_error(response: requests.Response) -> str:
     code = response.status_code
     if code == 401:
         return "облако не приняло ключ"
-    if code == 429:
-        retry = parse_duration(response.headers.get("retry-after", ""))
-        return "облако: исчерпан лимит" + (f", сброс через {retry:.0f} с" if retry else "")
     try:
-        message = response.json()["error"]["message"]
+        message = response.json()["error"]["message"] or ""
     except (ValueError, KeyError, TypeError):
         message = ""
+    if code == 429:
+        retry = parse_duration(response.headers.get("retry-after", ""))
+        # Какой лимит упёрся, пишут только в теле: в заголовках у Groq запросы
+        # и токены в минуту, а отбить запрос может и то, чего там нет.
+        name = _LIMIT_NAME.search(message)
+        return (
+            "облако: исчерпан лимит"
+            + (f" — {name.group(1).strip()}" if name else "")
+            + (f", сброс через {retry:.0f} с" if retry else "")
+        )
     return f"облако ответило {code}" + (f": {message[:80]}" if message else "")
 
