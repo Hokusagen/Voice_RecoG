@@ -169,7 +169,7 @@ class Pipeline(QObject):
             # полторы гигабайта памяти, которой и так впритык. Поднимется
             # сама, если облако подведёт.
             self._whisper.unload()
-            where = f"облако · {self._cloud.cfg.whisper_model}"
+            where = self._cloud.stt_label
         else:
             try:
                 where = self._whisper.load(self._whisper_device())
@@ -348,7 +348,7 @@ class Pipeline(QObject):
                 text = self._cloud.transcribe(
                     audio, self._sample_rate, cfg.language, cfg.initial_prompt
                 )
-                record.stt = self._cloud.cfg.whisper_model
+                record.stt = self._cloud.whisper_model
                 return text
             except CloudUnavailable as exc:
                 if self._lite:
@@ -418,7 +418,7 @@ class Pipeline(QObject):
         if wait > 0:
             self._emit(Stage.POLISHING, "Жду лимит облака", f"{wait:.0f} с")
             time.sleep(wait)
-        self._emit(Stage.POLISHING, verb, self._cloud.cfg.model)
+        self._emit(Stage.POLISHING, verb, self._cloud.model)
         return self._cloud.polish(raw_text, style)
 
     def _close(self, record: Record, started: float) -> float:

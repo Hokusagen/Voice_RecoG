@@ -62,6 +62,8 @@ class Controller(QObject):
         self._paused = False
         self._ready = False
         self._quota_warned = False
+        self._on_reserve = False
+        """Показывали ли, что работает запасное облако: там платный тариф."""
 
         self._max_duration = QTimer(self)
         self._max_duration.setSingleShot(True)
@@ -295,6 +297,15 @@ class Controller(QObject):
     @Slot(str)
     def _on_quota(self, line: str) -> None:
         self.tray.set_quota(line)
+        if self.cloud.on_reserve != self._on_reserve:
+            # Переезд между серверами человеку виден только здесь, а знать о
+            # нём стоит: на запасном тариф платный, а молчание основного
+            # обычно значит оборванный VPN.
+            self._on_reserve = self.cloud.on_reserve
+            if self._on_reserve:
+                self._show(Stage.WARNING, "Основное облако молчит", "работаю на запасном, тариф платный")
+            else:
+                self._show(Stage.DONE, "Основное облако вернулось", "снова бесплатный тариф")
         left = self.cloud.quota.requests_now()
         if left is not None and left <= _QUOTA_WARN_LEFT and not self._quota_warned:
             self._quota_warned = True
