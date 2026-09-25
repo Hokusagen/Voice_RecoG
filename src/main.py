@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import logging_setup  # noqa: E402
 
-# Собранное приложение живёт без консоли, поэтому вывод заворачивается в файл
+# Без консоли, у сборки и у pythonw из ярлыка, вывод заворачивается в файл
 # до первого print — иначе диагностика сбоя невозможна в принципе.
 _LOG_PATH = logging_setup.redirect_output()
 
