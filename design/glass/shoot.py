@@ -17,11 +17,14 @@ hidden (уход после «Готово»). lively — темперамент
 --series стадия/фон/от:до:шаг[/flat][/lively] снимает ряд моментов и склеивает
 лист shots/<id>/series_<...>.png с подписями времени — так видно движение.
 
-PNG кладёт в shots/<id>/, печатает пути и строки консоли с ошибками. В конце
+PNG кладёт в shots/<id>/ (с VT_TAG=метка — в shots/<id>/<метка>/, и профиль Edge
+у метки свой: так параллельные агенты не мешают друг другу), печатает пути и строки консоли с ошибками. В конце
 завершает свои процессы Edge (профиль vt-edge-<id>): висящие процессы копились
 десятками, съедали память, и Edge переставал запускаться.
 """
 
+import os
+import re
 import subprocess
 import time
 import sys
@@ -32,6 +35,9 @@ HERE = Path(__file__).resolve().parent
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 DEFAULT = ["listening/code/t=2.2", "listening/doc/t=2.6", "transcribing/photo/t=0.9",
            "done/photo/t=0.3", "done-joy/doc/t=0.35", "done-sad/photo/t=0.6", "error/code/t=0.5"]
+# Метка агента: у каждого свой профиль Edge и своя папка снимков, иначе два
+# параллельных запуска делят один Edge и затирают друг другу файлы.
+TAG = re.sub(r"[^\w-]", "", os.environ.get("VT_TAG", ""))
 NOISE = ("GPU", "gpu", "SwiftShader", "DevTools", "Fontconfig", "dbus", "sandbox", "Skia", "vbs_encoder",
          "task_manager", "chrome-extension://", "ProtocolLaunch")
 
@@ -78,10 +84,18 @@ def url_for(concept: str, p: dict, extra: dict | None = None) -> str:
     return f"file:///{HERE.as_posix()}/solo.html#{concept}/{p['stage']}/{p['scene']}/0/{flat}/{opt_str}"
 
 
+def profile_name(concept: str) -> str:
+    return f"vt-edge-{concept}" + (f"-{TAG}" if TAG else "")
+
+
 def profile(concept: str) -> Path:
     # Свой профиль на каждый концепт: иначе вызов уходит в уже запущенный Edge
     # (у пользователя он висит в фоне) и молча ничего не снимает.
-    return Path(tempfile.gettempdir()) / f"vt-edge-{concept}"
+    return Path(tempfile.gettempdir()) / profile_name(concept)
+
+
+def shots_dir(concept: str) -> Path:
+    return HERE / "shots" / concept / TAG if TAG else HERE / "shots" / concept
 
 
 def edge(concept: str, url: str, *, screenshot: Path | None = None, budget_ms: int = 1500,
@@ -138,7 +152,7 @@ def console_errors(run: subprocess.CompletedProcess) -> list[str]:
 
 def shoot(concept: str, spec: str, extra: dict | None = None, suffix: str = "") -> tuple[Path, list[str]]:
     p = parse(spec)
-    out_dir = HERE / "shots" / concept
+    out_dir = shots_dir(concept)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{p['name']}{suffix}.png"
     if out.exists():
@@ -150,9 +164,10 @@ def shoot(concept: str, spec: str, extra: dict | None = None, suffix: str = "") 
 
 def cleanup(concept: str) -> int:
     """Завершить висящие процессы Edge этого концепта — только с его профилем."""
-    tag = f"vt-edge-{concept}"
+    # Точное имя профиля: vt-edge-grain не должен задеть vt-edge-grain-critic.
+    tag = profile_name(concept)
     ps = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
-          f"Where-Object {{ $_.CommandLine -like '*{tag}*' }} | "
+          f"Where-Object {{ $_.CommandLine -match '{tag}(\"|\\s|$)' }} | "
           "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; 1 } | Measure-Object | "
           "Select-Object -ExpandProperty Count")
     run = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
@@ -185,7 +200,7 @@ def series(concept: str, spec: str) -> Path:
             print("   ", line[:300])
         shots.append((t, path))
     name = "_".join([stage, scene, span.replace(":", "-").replace(".", "_")] + ([tail.replace("/", "_")] if tail else []))
-    sheet = HERE / "shots" / concept / f"series_{name}.png"
+    sheet = shots_dir(concept) / f"series_{name}.png"
     make_sheet(shots, sheet)
     return sheet
 
