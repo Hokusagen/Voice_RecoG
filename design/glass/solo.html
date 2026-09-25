@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Концепт соло</title>
+<link rel="stylesheet" href="stage.css">
+<style>
+  html, body { margin: 0; background: #0b0c0f; }
+  #stage { width: 1000px; height: 380px; margin: 20px; border-radius: 14px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="harness.js"></script>
+<script>
+  // #id/стадия/фон/скорость_прокрутки/flat — для проверки в безголовом браузере;
+  // flat — линза как в композиторе Windows (без смещения фона).
+  // Стадия: auto | listening | transcribing | polishing | done | error | hidden.
+  const [id, stage, scene, speed, flat] = decodeURIComponent(location.hash.slice(1)).split('/');
+  if (flat === 'flat') LG.setRefraction(false);
+  document.getElementById('stage').dataset.concept = id;
+  if (scene) LG.setScene(scene);
+  if (speed !== undefined && speed !== '') { LG.settings.scrollSpeed = Number(speed); }
+  if (stage && stage !== 'auto') setTimeout(() => LG.show(stage), 50);
+  const s = document.createElement('script');
+  s.src = id + '.js';
+  document.body.appendChild(s);
+</script>
+</body>
+</html>

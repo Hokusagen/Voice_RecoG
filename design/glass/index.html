@@ -1,0 +1,189 @@
+<meta charset="utf-8">
+<title>Шесть стёкол</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="stage.css">
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #0b0c10;
+    --surface: #12141a;
+    --line: #232733;
+    --text: #e8e9ee;
+    --muted: #9aa1ae;
+    --ice: #9cc9ff;
+    --rec: #ff5f6d;
+    --stt: #79b0ff;
+    --llm: #b79cff;
+    --ok: #4fdca6;
+    --warn: #f2b04f;
+    --display: "Unbounded", "Segoe UI", system-ui, sans-serif;
+    --body: "Onest", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", Consolas, "SF Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--ink); color: var(--text); font: 400 16px/1.6 var(--body); padding-inline: 16px; padding-block: 0 80px; }
+  a { color: var(--ice); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; border-radius: 6px; }
+  .wrap { max-width: 1120px; margin-inline: auto; }
+
+  header.intro { padding-block: 56px 28px; display: grid; gap: 18px; }
+  .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  h1 { font: 700 clamp(34px, 5.4vw, 60px)/1.02 var(--display); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+  .lede { max-width: 68ch; color: #c9ccd4; margin: 0; }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .controls {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10; margin-block: 8px 28px;
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; padding: 12px 14px;
+    background: rgba(11, 12, 16, 0.82); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    border: 1px solid var(--line); border-radius: 14px;
+  }
+  .group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .group > span { font: 500 11px/1 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+  .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; flex-wrap: wrap; }
+  .seg button {
+    font: 500 13px/1 var(--body); color: var(--muted); background: none; border: 0; padding: 8px 11px; border-radius: 7px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: #232836; color: var(--text); }
+  .seg button:hover { color: var(--text); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+  .concept { display: grid; gap: 18px; padding-block: 34px; border-top: 1px solid var(--line); }
+  .concept-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .num { font: 500 13px/1 var(--mono); color: var(--muted); }
+  .concept h2 { font: 500 clamp(24px, 3.2vw, 34px)/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
+  .pitch { margin: 0; color: #c9ccd4; max-width: 70ch; }
+  .demo { height: clamp(300px, 34vw, 400px); border-radius: 18px; border: 1px solid var(--line); }
+  .hint { font: 400 12px/1.4 var(--mono); color: var(--muted); margin-top: -8px; }
+
+  .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+  .facts h3 { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .facts p, .facts li { margin: 0; color: #cfd2da; font-size: 15px; }
+  .facts ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+  .facts li::marker { color: var(--muted); }
+  .badge { display: inline-flex; align-items: center; gap: 7px; font: 500 12px/1 var(--mono); padding: 6px 9px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--surface); margin-bottom: 10px; }
+  .badge.go { color: var(--ok); } .badge.lag { color: var(--warn); } .badge.mix { color: var(--ice); }
+
+  .compare { padding-block: 40px 10px; border-top: 1px solid var(--line); display: grid; gap: 18px; }
+  .compare h2 { font: 500 clamp(22px, 3vw, 30px)/1.1 var(--display); margin: 0; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 14px; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 500 11px/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--surface); }
+  tr:last-child td { border-bottom: 0; }
+  td.yes { color: var(--ok); } td.no { color: var(--muted); } td.part { color: var(--warn); }
+
+  .notes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; padding-block: 30px 0; }
+  .notes h3 { font: 500 16px/1.3 var(--body); margin: 0 0 8px; }
+  .notes p { margin: 0; color: #c9ccd4; font-size: 15px; }
+
+  @media (max-width: 760px) {
+    .facts, .notes { grid-template-columns: 1fr; }
+    .controls { position: static; }
+  }
+  @media (prefers-reduced-motion: reduce) { .lg-label { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <div class="eyebrow">VoiceTyper · плашка диктовки · концепты</div>
+    <h1>Шесть стёкол</h1>
+    <p class="lede" id="lede">Шесть живых вариантов плашки. За каждой — «экран»: редактор, документ или обои, которые прокручиваются, чтобы было видно, как стекло ломает свет. Состояния идут по кругу сами, голос имитируется. Колесо мыши над демо прокручивает фон.</p>
+  </header>
+
+  <nav class="controls" aria-label="Управление демо">
+    <div class="group"><span>Фон</span>
+      <div class="seg" role="group" aria-label="Фон">
+        <button type="button" id="bg-code" data-scene="code" aria-pressed="false">Код</button>
+        <button type="button" id="bg-doc" data-scene="doc" aria-pressed="false">Документ</button>
+        <button type="button" id="bg-photo" data-scene="photo" aria-pressed="true">Обои</button>
+      </div>
+    </div>
+    <div class="group"><span>Прокрутка</span>
+      <div class="seg" role="group" aria-label="Прокрутка">
+        <button type="button" id="scroll-on" data-scroll="1" aria-pressed="true">Едет</button>
+        <button type="button" id="scroll-off" data-scroll="0" aria-pressed="false">Стоит</button>
+      </div>
+    </div>
+    <div class="group"><span>Линза</span>
+      <div class="seg" role="group" aria-label="Линза">
+        <button type="button" id="lens-apple" data-refr="1" aria-pressed="true">Как у Apple</button>
+        <button type="button" id="lens-win" data-refr="0" aria-pressed="false">Композитор Windows</button>
+      </div>
+    </div>
+    <div class="group"><span>Состояние</span>
+      <div class="seg" role="group" aria-label="Состояние">
+        <button type="button" id="st-auto" data-stage="auto" aria-pressed="true">По кругу</button>
+        <button type="button" id="st-listening" data-stage="listening" aria-pressed="false"><i class="dot" style="background:var(--rec)"></i>Слушаю</button>
+        <button type="button" id="st-transcribing" data-stage="transcribing" aria-pressed="false"><i class="dot" style="background:var(--stt)"></i>Распознаю</button>
+        <button type="button" id="st-polishing" data-stage="polishing" aria-pressed="false"><i class="dot" style="background:var(--llm)"></i>Причёсываю</button>
+        <button type="button" id="st-done" data-stage="done" aria-pressed="false"><i class="dot" style="background:var(--ok)"></i>Готово</button>
+        <button type="button" id="st-error" data-stage="error" aria-pressed="false"><i class="dot" style="background:var(--rec)"></i>Ошибка</button>
+      </div>
+    </div>
+  </nav>
+
+  <main id="concepts"></main>
+
+  <section class="compare" aria-labelledby="cmp-title">
+    <h2 id="cmp-title">Сравнение</h2>
+    <div class="table-wrap"><table id="cmp"></table></div>
+    <div class="notes" id="notes"></div>
+  </section>
+</div>
+
+<script src="harness.js"></script>
+<script src="concepts.js"></script>
+<script>
+  // Описания концептов лежат в concepts.js: страница строится из них.
+  (function () {
+    const main = document.getElementById('concepts');
+    for (const c of window.CONCEPTS) {
+      const section = document.createElement('section');
+      section.className = 'concept';
+      section.id = c.id;
+      section.setAttribute('aria-labelledby', `${c.id}-title`);
+      section.innerHTML = `
+        <div class="concept-head"><span class="num">${c.num}</span><h2 id="${c.id}-title">${c.name}</h2></div>
+        <p class="pitch">${c.pitch}</p>
+        <div class="demo" data-concept="${c.id}" role="img" aria-label="Живое демо: ${c.name}"></div>
+        <div class="hint">колесо мыши или перетаскивание над демо — прокрутка фона</div>
+        <div class="facts">
+          <div><h3>Что происходит</h3><ul>${c.states.map((s) => `<li>${s}</li>`).join('')}</ul></div>
+          <div><h3>Откуда идея</h3><ul>${c.sources.map((s) => `<li><a href="${s.url}" target="_blank" rel="noopener">${s.title}</a>${s.note ? ' — ' + s.note : ''}</li>`).join('')}</ul></div>
+          <div><h3>На Windows</h3><div class="badge ${c.windows.kind}">${c.windows.badge}</div><p>${c.windows.text}</p></div>
+        </div>`;
+      main.appendChild(section);
+    }
+    const table = document.getElementById('cmp');
+    const cols = window.COMPARE.columns;
+    table.innerHTML = `<thead><tr><th>Концепт</th>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${
+      window.COMPARE.rows.map((r) => `<tr><td>${r.name}</td>${r.cells.map(([cls, text]) => `<td class="${cls}">${text}</td>`).join('')}</tr>`).join('')
+    }</tbody>`;
+    document.getElementById('notes').innerHTML = window.NOTES.map((n) => `<div><h3>${n.title}</h3><p>${n.text}</p></div>`).join('');
+
+    function press(selector, button) {
+      document.querySelectorAll(selector).forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+    }
+    document.querySelectorAll('[data-scene]').forEach((b) => b.addEventListener('click', () => { LG.setScene(b.dataset.scene); press('[data-scene]', b); }));
+    document.querySelectorAll('[data-scroll]').forEach((b) => b.addEventListener('click', () => { LG.setScroll(b.dataset.scroll === '1'); press('[data-scroll]', b); }));
+    document.querySelectorAll('[data-refr]').forEach((b) => b.addEventListener('click', () => { LG.setRefraction(b.dataset.refr === '1'); press('[data-refr]', b); }));
+    document.querySelectorAll('[data-stage]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.stage === 'auto') LG.setAuto(true); else LG.show(b.dataset.stage);
+      press('[data-stage]', b);
+    }));
+    // Каждый концепт — свой файл; грузим после того, как появились места под демо.
+    for (const c of window.CONCEPTS) {
+      const script = document.createElement('script');
+      script.src = `${c.id}.js`;
+      document.body.appendChild(script);
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      LG.setScroll(false);
+      press('[data-scroll]', document.getElementById('scroll-off'));
+    }
+  })();
+</script>
