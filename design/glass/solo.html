@@ -12,18 +12,45 @@
 <body>
 <div id="stage"></div>
 <script src="harness.js"></script>
+<script src="kit.js"></script>
 <script>
-  // #id/стадия/фон/скорость_прокрутки/flat — для проверки в безголовом браузере;
-  // flat — линза как в композиторе Windows (без смещения фона).
-  // Стадия: auto | listening | transcribing | polishing | done | error | hidden.
-  const [id, stage, scene, speed, flat] = decodeURIComponent(location.hash.slice(1)).split('/');
+  // #id/стадия/фон/скорость_прокрутки/flat/опции — для проверки в безголовом браузере.
+  // Стадия: auto | listening | transcribing | polishing | done | done-joy | done-sad | error | hidden.
+  // flat — линза как в композиторе Windows (без смещения фона). Опции через &:
+  //   t=2.6        замороженное время: часы идут шагом 1/60 с до момента t от начала
+  //                стадии (до неё — настоящий путь через слушаю и обработку), один кадр;
+  //   temper=1     темперамент «живее» (0 — кот);
+  //   label=text   подпись без значка; halo — только ореол; none — без подписи (замер контраста);
+  //   cold=1       в стадию сразу из невидимого состояния;
+  //   trace=1      трасса кадров стадии в <pre id="lg-trace"> (читает trace.py);
+  //   draw=all     рисовать каждый кадр, если концепт копит что-то в своих буферах.
+  // Пример: solo.html#grain/done-joy/photo/0//t=0.4&temper=1
+  const [id, stageArg = 'auto', scene, speed, flat, optStr = ''] = decodeURIComponent(location.hash.slice(1)).split('/');
+  const opts = Object.fromEntries(optStr.split('&').filter(Boolean).map((kv) => {
+    const [k, v = '1'] = kv.split('=');
+    return [k, v];
+  }));
+  const [stage, emotion = null] = stageArg.split('-');
   if (flat === 'flat') LG.setRefraction(false);
   document.getElementById('stage').dataset.concept = id;
   if (scene) LG.setScene(scene);
-  if (speed !== undefined && speed !== '') { LG.settings.scrollSpeed = Number(speed); }
-  if (stage && stage !== 'auto') setTimeout(() => LG.show(stage), 50);
+  if (speed !== undefined && speed !== '') LG.settings.scrollSpeed = Number(speed);
+  if (opts.temper) LG.setTemper(Number(opts.temper));
+  const frozenT = opts.t !== undefined ? Number(opts.t) : null;
+  if (frozenT != null) LG.freeze(opts.label);
   const s = document.createElement('script');
   s.src = id + '.js';
+  s.onload = () => {
+    LG.mount();
+    if (frozenT != null) {
+      LG.runTo({
+        stage: stage === 'auto' ? 'done' : stage, t: frozenT, emotion,
+        cold: opts.cold === '1', trace: opts.trace === '1', drawAll: opts.draw === 'all',
+      });
+    } else if (stage && stage !== 'auto') {
+      setTimeout(() => LG.show(stage, { emotion }), 50);
+    }
+  };
   document.body.appendChild(s);
 </script>
 </body>

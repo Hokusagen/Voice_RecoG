@@ -365,88 +365,185 @@ class CloudClient:
     hidden: { title: '', accent: '#ffffff', icon: null },
   };
   const DONE_TEXT = 'Давай разберём на примере, как энкодер связан с декодером.';
-  const PLAN = [['listening', 6.0], ['transcribing', 1.8], ['polishing', 1.8], ['result', 3.6], ['hidden', 1.3]];
+  const PLAN1 = [['listening', 6.0], ['transcribing', 1.8], ['polishing', 1.8], ['result', 3.6], ['hidden', 1.3]];
 
-  const clock = {
-    time: 0,
-    stage: 'hidden',
-    prev: 'hidden',
-    since: 0,
-    auto: true,
-    planIndex: -1,
-    planLeft: 0.6,
-    cycle: 0,
-    recorded: 0,
+  // Второй круг. В «Готово» текста нет: он уже вставлен в окно под курсором,
+  // плашка показывает только галочку, поэтому и держится короче. Реакция Дарви
+  // укладывается в тот же такт (DARVI.md: не дольше секунды).
+  const TITLES2 = { listening: 'Слушаю', transcribing: 'Распознаю', polishing: 'Причёсываю', done: '', error: 'Не расслышал', hidden: '' };
+  const PLAN2 = [['listening', 5.0], ['transcribing', 1.6], ['polishing', 1.4], ['result', 2.2], ['hidden', 1.2]];
+  // Что «продиктовано» в каждом «Готово»: по этой фразе Дарви решает, как
+  // откликнуться. На плашке фразы нет, её показывает страница рядом с демо.
+  const PHRASES = {
+    none: 'Давай разберём на примере, как энкодер связан с декодером.',
+    joy: 'Ура, всё получилось! Спасибо тебе огромное!',
+    sad: 'Мне очень жаль. Держись, если что — я рядом.',
   };
+
+  // Часы на каждый круг: у первого свой ритм и тексты, и страница второго круга
+  // не должна менять, как выглядят концепты первого.
+  function makeClock(round) {
+    return {
+      round, plan: round === 2 ? PLAN2 : PLAN1,
+      time: 0, stage: 'hidden', prev: 'hidden', since: 0,
+      auto: true, planIndex: -1, planLeft: 0.6, cycle: 0,
+      emotion: null, voice: makeVoice(7),
+    };
+  }
 
   function hexRgb(hex) {
     const v = parseInt(hex.slice(1), 16);
     return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
   }
 
-  function setStage(name) {
-    clock.prev = clock.stage;
-    clock.stage = name;
-    clock.since = clock.time;
-    if (name === 'listening') clock.recorded = 0;
-    for (const fn of stageListeners) fn(name);
+  function setStage(c, name, opts = {}) {
+    c.prev = c.stage;
+    c.stage = name;
+    c.since = c.time;
+    if (name === 'listening') { c.emotion = null; startSpeech(c.voice); }
+    // Эмоция живёт до следующей диктовки: уход после «Готово» — ещё часть реакции.
+    if (name === 'done') c.emotion = opts.emotion || null;
+    if (name === 'error') c.emotion = null;
+    for (const fn of stageListeners) fn(name, { round: c.round, emotion: c.emotion, phrase: phraseOf(c) });
   }
   const stageListeners = [];
 
-  function advanceAuto(dt) {
-    if (!clock.auto) return;
-    clock.planLeft -= dt;
-    if (clock.planLeft > 0) return;
-    clock.planIndex = (clock.planIndex + 1) % PLAN.length;
-    let [name, seconds] = PLAN[clock.planIndex];
+  function phraseOf(c) {
+    return c.round === 2 && c.stage === 'done' ? PHRASES[c.emotion || 'none'] : '';
+  }
+
+  function advanceAuto(c, dt) {
+    if (!c.auto) return;
+    c.planLeft -= dt;
+    if (c.planLeft > 0) return;
+    c.planIndex = (c.planIndex + 1) % c.plan.length;
+    let [name, seconds] = c.plan[c.planIndex];
+    const opts = {};
     if (name === 'result') {
-      name = clock.cycle % 3 === 2 ? 'error' : 'done';
-      if (name === 'error') seconds = 2.6;
-      clock.cycle++;
+      if (c.round === 2) {
+        // По кругу «Готово» чередуется: без эмоции, радость, грусть, затем ошибка.
+        // Выбранная на странице реакция ставится в каждое «Готово».
+        if (settings.reaction !== 'auto') {
+          name = 'done';
+          opts.emotion = settings.reaction === 'none' ? null : settings.reaction;
+        } else {
+          const k = c.cycle % 4;
+          name = k === 3 ? 'error' : 'done';
+          opts.emotion = [null, 'joy', 'sad', null][k];
+          if (name === 'error') seconds = 2.4;
+        }
+      } else {
+        name = c.cycle % 3 === 2 ? 'error' : 'done';
+        if (name === 'error') seconds = 2.6;
+      }
+      c.cycle++;
     }
-    clock.planLeft = seconds;
-    setStage(name);
+    c.planLeft = seconds;
+    setStage(c, name, opts);
   }
 
   // ---------------------------------------------------------------- голос
 
-  // Детерминированная «речь»: фразы из слогов 4–6 Гц с паузами, атака быстрая,
-  // спад медленный — как у реального уровня RMS с микрофона.
-  let seed = 7;
-  function rand() {
-    seed = (seed * 16807) % 2147483647;
-    return (seed - 1) / 2147483646;
+  // Детерминированная «речь»: фразы из слогов 4–6 Гц с паузами. Генератор у
+  // каждого голоса свой, чтобы снимок в замороженном времени повторялся кадр в кадр.
+  function makeVoice(seed) {
+    return {
+      seed, time: 0,
+      // первый круг: сглаживание как было — атака 25 мс, спад 140 мс
+      level: 0, raw: 0, history: new Float32Array(96), bands: new Float32Array(5),
+      // второй круг: окно дБ, гамма 0.7, атака 70 мс, спад 280 мс (RESEARCH.md → «Голос»)
+      level2: 0, raw2: 0, speech: 0, history2: new Float32Array(96), bands2: new Float32Array(5),
+      events: [], sincePeak: 9, rising: false, prevLevel2: 0, mean2: 0, talking: false,
+      phrase: 0, syll: 0, gap: 0, amp: 0.7, rate: 5, stress: 1, syllIdx: 0,
+    };
   }
-  const voice = { level: 0, raw: 0, history: new Float32Array(96), bands: new Float32Array(5), phrase: 0, syll: 0, gap: 0, amp: 0.7, rate: 5 };
+  function rand(v) {
+    v.seed = (v.seed * 16807) % 2147483647;
+    return (v.seed - 1) / 2147483646;
+  }
+  // Человек нажал клавишу и начинает говорить не сразу: пауза перед первой фразой.
+  function startSpeech(v) {
+    v.gap = 0.35;
+    v.phrase = 1.4 + rand(v) * 1.8;
+    v.amp = 0.7 + rand(v) * 0.3;
+    v.rate = 4 + rand(v) * 2.2;
+  }
 
-  function stepVoice(dt, speaking) {
+  const DB_LO = -56;   // пол окна: шум комнаты и дыхание уходят в ноль
+  const DB_HI = -6;    // потолок: громкая речь у микрофона
+  function stepVoice(v, dt, speaking) {
+    v.time += dt;
+    v.events.length = 0;
     let target = 0;
+    const wasTalking = v.talking;
+    v.talking = false;
     if (speaking) {
-      if (voice.gap > 0) {
-        voice.gap -= dt;
+      if (v.gap > 0) {
+        v.gap -= dt;
       } else {
-        voice.phrase -= dt;
-        voice.syll += dt * voice.rate;
-        const s = voice.syll % 1;
+        v.talking = true;
+        v.phrase -= dt;
+        const before = Math.floor(v.syll);
+        v.syll += dt * v.rate;
+        if (Math.floor(v.syll) !== before) {
+          // Ударный слог раз в 3–5: громче на треть — живая речь, а не метроном.
+          v.syllIdx++;
+          v.stress = rand(v) < 0.28 ? 1.3 : 1;
+        }
+        const s = v.syll % 1;
         const envelope = Math.pow(Math.sin(Math.PI * s), 1.6);
-        target = voice.amp * (0.35 + 0.65 * envelope) * (0.8 + 0.2 * Math.sin(clock.time * 1.7));
-        if (voice.phrase <= 0) {
-          voice.gap = 0.25 + rand() * 0.55;
-          voice.phrase = 1.2 + rand() * 2.4;
-          voice.amp = 0.55 + rand() * 0.4;
-          voice.rate = 4 + rand() * 2.2;
+        target = v.amp * v.stress * (0.35 + 0.65 * envelope) * (0.8 + 0.2 * Math.sin(v.time * 1.7));
+        if (v.phrase <= 0) {
+          v.gap = 0.25 + rand(v) * 0.55;
+          v.phrase = 1.2 + rand(v) * 2.4;
+          // Фразы разной громкости: тихая оговорка и уверенная фраза отличаются.
+          v.amp = 0.35 + rand(v) * 0.65;
+          v.rate = 4 + rand(v) * 2.2;
         }
       }
     }
-    voice.raw = target;
-    const k = target > voice.level ? 1 - Math.exp(-dt / 0.025) : 1 - Math.exp(-dt / 0.14);
-    voice.level += (target - voice.level) * k;
-    voice.history.copyWithin(0, 1);
-    voice.history[voice.history.length - 1] = voice.level;
-    for (let i = 0; i < voice.bands.length; i++) {
-      const wobble = 0.55 + 0.45 * Math.sin(clock.time * (3.1 + i * 1.7) + i * 1.3);
-      voice.bands[i] += (voice.level * wobble - voice.bands[i]) * Math.min(1, dt * 18);
+    if (v.talking && !wasTalking) v.events.push({ type: 'phrase' });
+
+    // Первый круг — как было.
+    v.raw = Math.min(1, target);
+    const k = v.raw > v.level ? 1 - Math.exp(-dt / 0.025) : 1 - Math.exp(-dt / 0.14);
+    v.level += (v.raw - v.level) * k;
+    v.history.copyWithin(0, 1);
+    v.history[v.history.length - 1] = v.level;
+    for (let i = 0; i < v.bands.length; i++) {
+      const wobble = 0.55 + 0.45 * Math.sin(v.time * (3.1 + i * 1.7) + i * 1.3);
+      v.bands[i] += (v.level * wobble - v.bands[i]) * Math.min(1, dt * 18);
     }
+
+    // Второй круг: RMS в дБ, окно −56…−6 дБ, гамма 0.7. Речь почти всегда
+    // «включена» (0.65–1), пауза уходит в ноль: голос читается фразами, а не слогами.
+    const rms = 0.0015 + 0.3 * target;
+    const db = 20 * Math.log10(rms);
+    v.raw2 = Math.pow(Math.max(0, Math.min(1, (db - DB_LO) / (DB_HI - DB_LO))), 0.7);
+    const k2 = v.raw2 > v.level2 ? 1 - Math.exp(-dt / 0.07) : 1 - Math.exp(-dt / 0.28);
+    v.level2 += (v.raw2 - v.level2) * k2;
+    // «Говорит сейчас»: медленный вентиль фразы — чтобы в паузах замирать.
+    const ks = v.talking ? 1 - Math.exp(-dt / 0.12) : 1 - Math.exp(-dt / 0.5);
+    v.speech += ((v.talking ? 1 : 0) - v.speech) * ks;
+    v.history2.copyWithin(0, 1);
+    v.history2[v.history2.length - 1] = v.level2;
+    for (let i = 0; i < v.bands2.length; i++) {
+      const wobble = 0.55 + 0.45 * Math.sin(v.time * (1.3 + i * 0.7) + i * 1.3);
+      v.bands2[i] += (v.level2 * wobble - v.bands2[i]) * (1 - Math.exp(-dt / 0.12));
+    }
+    // Пик — вершина сглаженного уровня заметно выше среднего по фразе, не чаще
+    // раза в 0.7 с: повод для редкого акцента (капля, блик), а не для реакции на
+    // каждый слог. Ударные слоги и громкие фразы дают пики, ровная речь — нет.
+    if (v.talking) v.mean2 += (v.level2 - v.mean2) * (1 - Math.exp(-dt / 1.2));
+    v.sincePeak += dt;
+    const up = v.level2 > v.prevLevel2 + 1e-5;
+    const lift = v.level2 - v.mean2;
+    if (v.rising && !up && v.level2 > 0.75 && lift > 0.05 && v.sincePeak > 0.7) {
+      v.events.push({ type: 'peak', strength: Math.min(1, lift / 0.15) });
+      v.sincePeak = 0;
+    }
+    v.rising = up;
+    v.prevLevel2 = v.level2;
   }
 
   // ---------------------------------------------------------------- пружина
@@ -584,6 +681,16 @@ float shapeDist(vec2 p, out vec2 n) {
   return f / max(gl, 0.25);
 }
 vec2 shapeNormal(vec2 p) { vec2 n; shapeDist(p, n); return n; }
+#ifdef LG_LENS_SHAPE
+float lensDist(vec2 p, out vec2 n) {
+  const float e = 0.5;
+  float f = lensShape(p);
+  vec2 gr = vec2(lensShape(p + vec2(e, 0.0)) - lensShape(p - vec2(e, 0.0)), lensShape(p + vec2(0.0, e)) - lensShape(p - vec2(0.0, e))) / (2.0 * e);
+  float gl = length(gr);
+  n = gl > 1e-5 ? gr / gl : vec2(0.0, -1.0);
+  return f / max(gl, 0.25);
+}
+#endif
 // Возвращает цвет поверх фона bg: rgb — итог, a — покрытие стеклом.
 vec4 liquidGlass(vec2 p, Glass g, vec3 bg) {
   float m = clamp(g.materialize, 0.0, 1.0);
@@ -597,17 +704,28 @@ vec4 liquidGlass(vec2 p, Glass g, vec3 bg) {
   if (cover <= 0.0) return vec4(under, 0.0);
 
   float inside = max(-dist, 0.0);
+  // Линза может считаться от другой, гладкой формы, чем силуэт: так морф с
+  // лепестками ломает свет как круг, а лепестки видны кромкой и бликом.
+  // Концепт объявляет #define LG_LENS_SHAPE и float lensShape(vec2 p) до glass.
+#ifdef LG_LENS_SHAPE
+  vec2 nl;
+  float insideL = max(-lensDist(p, nl), 0.0);
+  vec2 nr = nl;
+#else
+  float insideL = inside;
+  vec2 nr = n;
+#endif
   // Профиль circle-map, подогнанный к нативному стеклу (RMS 2.4 px).
-  float t = clamp(1.0 - inside / g.bevel, 0.0, 1.0);
+  float t = clamp(1.0 - insideL / g.bevel, 0.0, 1.0);
   float d = g.amplitude * m * uRefraction * (1.0 - sqrt(max(1.0 - t * t, 0.0)));
   float sigma = g.frost * m;
   vec3 col;
   if (g.dispersion * uRefraction > 0.001) {
-    col.r = sceneBlur(p - n * d * (1.0 + g.dispersion), sigma).r;
-    col.g = sceneBlur(p - n * d, sigma).g;
-    col.b = sceneBlur(p - n * d * (1.0 - g.dispersion), sigma).b;
+    col.r = sceneBlur(p - nr * d * (1.0 + g.dispersion), sigma).r;
+    col.g = sceneBlur(p - nr * d, sigma).g;
+    col.b = sceneBlur(p - nr * d * (1.0 - g.dispersion), sigma).b;
   } else {
-    col = sceneBlur(p - n * d, sigma);
+    col = sceneBlur(p - nr * d, sigma);
   }
   col = col * mix(1.0, g.gain, m) + g.lift * m;
   col = mix(col, g.tint, g.tintAmount * m);
@@ -673,9 +791,18 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
   const stages = [];
   // refraction: true — линза как у Apple; false — как умеет композитор Windows без
   // внедрения в DWM (размытие, тон, блики есть, смещения фона нет).
-  const settings = { scene: 'photo', scroll: true, scrollSpeed: 38, refraction: true };
+  // reaction — реакция Дарви во втором круге: auto (по кругу) | none | joy | sad.
+  // temper — темперамент Дарви: 0 — кот (спокойный), 1 — живее.
+  const settings = { scene: 'photo', scroll: true, scrollSpeed: 38, refraction: true, reaction: 'auto', temper: 0 };
   LG.settings = settings;
   LG.stageNames = STAGES;
+  LG.phrases = PHRASES;
+  const clocks = { 1: makeClock(1), 2: makeClock(2) };
+
+  // Замороженное время для снимков: часы основы идут фиксированным шагом до
+  // нужного момента, рисуется один кадр. label: normal | text (без значка) |
+  // halo (только ореол, буквы прозрачные) | none — для замера контраста.
+  const frozen = { on: false, drawing: true, label: 'normal', trace: null };
 
   function makeLabel(root) {
     const label = document.createElement('div');
@@ -703,11 +830,30 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
   }
   LG.textWidth = textWidth;
 
-  function stageText(name) {
-    const info = STAGES[name];
+  // Ширина содержимого подписи второго круга, без полей: значок 16 и зазоры по 10.
+  // Пустые заголовок и деталь места не занимают — в «Готово» остаётся одна галочка.
+  function contentWidth(title, detail) {
+    let w = 16;
+    measureCtx.font = `600 14px ${FONT_UI}`;
+    if (title) w += 10 + measureCtx.measureText(title).width;
+    if (detail) {
+      measureCtx.font = `400 13px ${FONT_UI}`;
+      w += 10 + measureCtx.measureText(detail).width;
+    }
+    return Math.ceil(w);
+  }
+  LG.contentWidth = contentWidth;
+
+  function stageText(c, name) {
     let detail = '';
+    if (c.round === 2) {
+      if (name === 'listening') detail = `0:${String(Math.floor(c.time - c.since)).padStart(2, '0')}`;
+      else if (name === 'transcribing') detail = '5,8 с';
+      return { title: TITLES2[name], detail };
+    }
+    const info = STAGES[name];
     if (name === 'listening') {
-      const s = Math.floor(clock.time - clock.since);
+      const s = Math.floor(c.time - c.since);
       detail = `0:${String(s).padStart(2, '0')}`;
     } else if (name === 'transcribing') detail = '5,8 с записи';
     else if (name === 'polishing') detail = 'бережно';
@@ -718,6 +864,8 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 
   function createStage(concept, root) {
     root.classList.add('lg-stage');
+    const round = concept.round === 2 ? 2 : 1;
+    root.dataset.round = String(round);
     const canvas = document.createElement('canvas');
     canvas.className = 'lg-canvas';
     root.appendChild(canvas);
@@ -727,8 +875,9 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     error.hidden = true;
     root.appendChild(error);
 
-    const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false, alpha: false, preserveDrawingBuffer: false });
-    const st = { concept, root, canvas, label, error, gl, visible: true, scroll: 0, userScroll: 0, texMode: null, W: 0, H: 0, dpr: 1, broken: false, lastLabel: '' };
+    // В замороженном времени кадр рисуется один раз и должен дожить до снимка.
+    const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false, alpha: false, preserveDrawingBuffer: frozen.on });
+    const st = { concept, round, root, canvas, label, error, gl, visible: true, scroll: 0, userScroll: 0, texMode: null, W: 0, H: 0, dpr: 1, broken: false, lastLabel: '' };
     if (!gl) {
       fail(st, new Error('WebGL2 недоступен в этом браузере'));
       return st;
@@ -751,13 +900,16 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     root.addEventListener('pointerup', () => { dragY = null; });
 
     const ctx = {
-      gl, canvas, root,
+      gl, canvas, root, round,
       get W() { return st.W; }, get H() { return st.H; }, get dpr() { return st.dpr; },
+      /** true, пока кадр не рисуется: замороженное время прокручивает часы до снимка. */
+      get skipping() { return !frozen.drawing; },
       program(fragmentBody, vertex) {
         return makeProgram(gl, fragmentBody, vertex);
       },
       /** Ставит общие юниформы полотна и рисует полноэкранный треугольник. */
       draw(program, uniforms = {}) {
+        if (!frozen.drawing) return;
         gl.useProgram(program.prog);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, st.sceneTex);
@@ -768,7 +920,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
         if (u.uSceneSize) gl.uniform2f(u.uSceneSize, SCENE_W, SCENE_H);
         if (u.uSceneOff) gl.uniform2f(u.uSceneOff, (SCENE_W - st.W) / 2, st.scroll);
         if (u.uSceneScale) gl.uniform1f(u.uSceneScale, SCENE_SCALE);
-        if (u.uTime) gl.uniform1f(u.uTime, clock.time);
+        if (u.uTime) gl.uniform1f(u.uTime, clocks[round].time);
         if (u.uRefraction) gl.uniform1f(u.uRefraction, settings.refraction ? 1 : 0);
         for (const [name, value] of Object.entries(uniforms)) {
           const loc = u[name];
@@ -832,14 +984,19 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 
   function renderLabel(st, s, info) {
     const label = st.label;
-    const show = s.stage !== 'hidden' && info.labelOpacity > 0.01 && !info.hideLabel;
+    const show = s.stage !== 'hidden' && info.labelOpacity > 0.01 && !info.hideLabel && frozen.label !== 'none';
     label.style.opacity = show ? String(info.labelOpacity) : '0';
     if (!show) return;
     const key = `${s.stage}|${s.text.title}|${s.text.detail}`;
     if (key !== st.lastLabel) {
+      const title = label.querySelector('.lg-title');
+      const detail = label.querySelector('.lg-detail');
       label.querySelector('.lg-icon').innerHTML = ICONS[STAGES[s.stage].icon] || '';
-      label.querySelector('.lg-title').textContent = s.text.title;
-      label.querySelector('.lg-detail').textContent = s.text.detail;
+      title.textContent = s.text.title;
+      detail.textContent = s.text.detail;
+      // Пустой span всё равно занимает зазор flex: галочка «Готово» съехала бы вбок.
+      title.hidden = !s.text.title;
+      detail.hidden = !s.text.detail;
       st.lastLabel = key;
     }
     // Текст выбирает цвет по фону под плашкой: как адаптивный материал у Apple.
@@ -852,9 +1009,12 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
       color = st.luma > 0.45 ? 'dark' : 'light';
     }
     label.dataset.tone = color === 'dark' || color === 'light' ? color : 'custom';
-    if (color !== 'dark' && color !== 'light') label.style.color = color;
+    if (frozen.label === 'halo') label.style.color = 'transparent';
+    else if (color !== 'dark' && color !== 'light') label.style.color = color;
     else label.style.color = '';
-    label.querySelector('.lg-icon').style.color = info.iconColor || STAGES[s.stage].accent;
+    const icon = label.querySelector('.lg-icon');
+    icon.style.color = info.iconColor || STAGES[s.stage].accent;
+    icon.style.visibility = info.hideIcon || frozen.label === 'text' || frozen.label === 'halo' ? 'hidden' : '';
     const scale = info.labelScale == null ? 1 : info.labelScale;
     label.style.transform = `translate(${info.cx}px, ${info.cy}px) translate(-50%, -50%) scale(${scale})`;
     label.style.filter = info.labelBlur ? `blur(${info.labelBlur}px)` : '';
@@ -862,49 +1022,157 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 
   // ---------------------------------------------------------------- цикл
 
-  let last = null;
-  function loop(now) {
-    const dt = last == null ? 1 / 60 : Math.min(0.05, (now - last) / 1000);
-    last = now;
-    clock.time += dt;
-    advanceAuto(dt);
-    stepVoice(dt, clock.stage === 'listening');
-    const accentHex = STAGES[clock.stage].accent;
-    const text = stageText(clock.stage);
-    const snapshot = {
-      stage: clock.stage,
-      prev: clock.prev,
-      t: clock.time - clock.since,
-      time: clock.time,
+  function snapshot(c, dt) {
+    const v = c.voice;
+    const two = c.round === 2;
+    const accentHex = STAGES[c.stage].accent;
+    const text = stageText(c, c.stage);
+    const contentW = two ? contentWidth(text.title, text.detail) : 0;
+    return {
+      round: c.round,
+      stage: c.stage,
+      prev: c.prev,
+      t: c.time - c.since,
+      time: c.time,
       dt,
-      level: voice.level,
-      raw: voice.raw,
-      history: voice.history,
-      bands: voice.bands,
+      level: two ? v.level2 : v.level,
+      raw: two ? v.raw2 : v.raw,
+      history: two ? v.history2 : v.history,
+      bands: two ? v.bands2 : v.bands,
+      speech: v.speech,
+      events: v.events,
       text,
-      targetW: textWidth(text.title, text.detail),
+      contentW,
+      targetW: two ? Math.max(56, Math.min(640, contentW + 48)) : textWidth(text.title, text.detail),
       accent: hexRgb(accentHex),
       accentHex,
-      shown: clock.stage !== 'hidden',
+      shown: c.stage !== 'hidden',
       refraction: settings.refraction ? 1 : 0,
+      emotion: c.emotion,
+      phrase: phraseOf(c),
+      temper: settings.temper,
     };
+  }
+
+  const r4 = (x) => (typeof x === 'number' ? Math.round(x * 1e4) / 1e4 : x);
+  function traceFrame(snap, info) {
+    const extra = {};
+    if (info.trace) for (const [k, v] of Object.entries(info.trace)) extra[k] = r4(v);
+    frozen.trace.frames.push({
+      t: r4(snap.t), level: r4(snap.level), raw: r4(snap.raw), speech: r4(snap.speech),
+      events: snap.events.map((e) => e.type),
+      cx: r4(info.cx), cy: r4(info.cy), label: r4(info.labelOpacity), blur: r4(info.labelBlur || 0), trace: extra,
+    });
+  }
+
+  function tick(dt) {
+    const snaps = {};
+    for (const c of Object.values(clocks)) {
+      c.time += dt;
+      advanceAuto(c, dt);
+      stepVoice(c.voice, dt, c.stage === 'listening');
+      snaps[c.round] = snapshot(c, dt);
+    }
     for (const st of stages) {
-      if (!st.visible || st.broken) continue;
+      if ((!st.visible && !frozen.on) || st.broken) continue;
       resize(st);
       st.scroll += (settings.scroll ? settings.scrollSpeed * dt : 0) + st.userScroll;
       st.userScroll = 0;
       if (st.texMode !== settings.scene) uploadScene(st);
+      const snap = snaps[st.round];
       try {
-        const info = st.concept.frame(st.ctx, snapshot) || {};
+        const info = st.concept.frame(st.ctx, snap) || {};
         if (info.cx == null) info.cx = st.W / 2;
         if (info.cy == null) info.cy = st.H / 2;
-        if (info.labelOpacity == null) info.labelOpacity = snapshot.shown ? 1 : 0;
-        renderLabel(st, snapshot, info);
+        if (info.labelOpacity == null) info.labelOpacity = snap.shown ? 1 : 0;
+        renderLabel(st, snap, info);
+        if (frozen.trace && st === stages[0]) traceFrame(snap, info);
       } catch (err) {
         fail(st, err);
       }
     }
+  }
+
+  let last = null;
+  function loop(now) {
+    if (!frozen.on) {
+      const dt = last == null ? 1 / 60 : Math.min(0.05, (now - last) / 1000);
+      last = now;
+      tick(dt);
+    }
     requestAnimationFrame(loop);
+  }
+
+  // Путь к стадии, как в жизни: снимок «Готово» идёт после настоящей обработки,
+  // «hidden» — уход после «Готово». cold — сразу из невидимого состояния.
+  const ROUTES = {
+    listening: [],
+    transcribing: [['listening', 2.6]],
+    polishing: [['listening', 2.6], ['transcribing', 1.2]],
+    done: [['listening', 2.6], ['transcribing', 1.2], ['polishing', 1.0]],
+    error: [['listening', 2.6], ['transcribing', 1.2], ['polishing', 1.0]],
+    hidden: [['listening', 2.6], ['transcribing', 1.2], ['polishing', 1.0], ['done', 1.8]],
+  };
+  const STEP = 1 / 60;
+
+  /** Заморозить время до загрузки концепта: снимок, а не живой показ. */
+  LG.freeze = function (labelMode) {
+    frozen.on = true;
+    if (labelMode) frozen.label = labelMode;
+    document.documentElement.classList.add('lg-frozen');
+  };
+
+  /** Прогнать часы фиксированным шагом до момента t стадии stage и нарисовать один кадр. */
+  LG.runTo = function ({ stage, t = 1, emotion = null, cold = false, drawAll = false, trace = false }) {
+    const run = (seconds, mode) => {
+      const n = Math.max(1, Math.round(seconds / STEP));
+      for (let i = 0; i < n; i++) {
+        frozen.drawing = drawAll || (mode === 'last' && i === n - 1);
+        tick(STEP);
+      }
+    };
+    const all = (name, opts) => { for (const c of Object.values(clocks)) setStage(c, name, opts); };
+    for (const c of Object.values(clocks)) c.auto = false;
+    run(0.3, 'none');
+    for (const [name, seconds] of cold ? [] : ROUTES[stage]) {
+      all(name, { emotion });
+      run(seconds, 'none');
+    }
+    all(stage, { emotion });
+    frozen.trace = trace ? { frames: [] } : null;
+    run(t, 'last');
+    frozen.drawing = true;
+    if (trace) writeTrace({ stage, t, emotion, cold });
+  };
+
+  const r2 = (x) => Math.round(x * 100) / 100;
+  function rectOf(el, origin) {
+    const r = el.getBoundingClientRect();
+    return { x: r2(r.left - origin.left), y: r2(r.top - origin.top), w: r2(r.width), h: r2(r.height) };
+  }
+
+  function writeTrace(meta) {
+    const st = stages[0];
+    const data = { concept: st ? st.concept.id : null, ...meta, temper: settings.temper, scene: settings.scene, frames: frozen.trace.frames };
+    if (st) {
+      const origin = st.root.getBoundingClientRect();
+      data.stageRect = { x: r2(origin.left), y: r2(origin.top), w: r2(origin.width), h: r2(origin.height) };
+      const label = st.label;
+      const title = label.querySelector('.lg-title');
+      const detail = label.querySelector('.lg-detail');
+      const cs = (el) => { const s = getComputedStyle(el); return { color: s.color, opacity: Number(s.opacity) }; };
+      const part = (el) => (el.hidden || !el.textContent ? null : { text: el.textContent, ...rectOf(el, origin), ...cs(el) });
+      data.label = {
+        opacity: Number(label.style.opacity || 0), tone: label.dataset.tone || '', color: getComputedStyle(label).color,
+        box: rectOf(label, origin), title: part(title), detail: part(detail),
+      };
+      data.error = st.broken ? st.error.textContent.slice(0, 2000) : null;
+    }
+    const pre = document.createElement('pre');
+    pre.id = 'lg-trace';
+    pre.hidden = true;
+    pre.textContent = JSON.stringify(data);
+    document.body.appendChild(pre);
   }
 
   // ---------------------------------------------------------------- API
@@ -927,16 +1195,31 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     }
   }
 
+  LG.mount = mountAll;
   LG.setScene = (mode) => { settings.scene = mode; };
   LG.setScroll = (on) => { settings.scroll = on; };
   LG.setRefraction = (on) => { settings.refraction = on; };
   LG.setAuto = (on) => {
-    clock.auto = on;
-    if (on) clock.planLeft = 0;
+    for (const c of Object.values(clocks)) {
+      c.auto = on;
+      if (on) c.planLeft = 0;
+    }
   };
-  LG.show = (name) => { clock.auto = false; setStage(name); };
+  // Кнопка «Готово» на странице берёт реакцию из переключателя.
+  LG.show = (name, opts = {}) => {
+    if (name === 'done' && opts.emotion === undefined) {
+      opts = { ...opts, emotion: settings.reaction === 'joy' || settings.reaction === 'sad' ? settings.reaction : null };
+    }
+    for (const c of Object.values(clocks)) {
+      c.auto = false;
+      setStage(c, name, opts);
+    }
+  };
+  LG.setReaction = (r) => { settings.reaction = r; };
+  LG.setTemper = (v) => { settings.temper = v; };
   LG.onStage = (fn) => stageListeners.push(fn);
-  LG.clock = clock;
+  LG.clock = clocks[1];
+  LG.clocks = clocks;
 
   document.addEventListener('DOMContentLoaded', mountAll);
   requestAnimationFrame(loop);

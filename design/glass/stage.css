@@ -15,3 +15,8 @@
   position: absolute; inset: 0; margin: 0; padding: 12px; overflow: auto; color: #ff8a80; background: #1a0d0d;
   font: 11px/1.4 Consolas, monospace; white-space: pre-wrap;
 }
+/* Второй круг: ореол и у значка — цветная точка и галочка не теряются на пёстром фоне. */
+.lg-stage[data-round="2"] .lg-label[data-tone="light"] .lg-icon { filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.45)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35)); }
+.lg-stage[data-round="2"] .lg-label[data-tone="dark"] .lg-icon { filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.5)) drop-shadow(0 0 4px rgba(255, 255, 255, 0.45)); }
+/* Замороженное время для снимков: переходы CSS поймали бы подпись посреди проявления. */
+.lg-frozen .lg-label { transition: none !important; }
