@@ -30,3 +30,5 @@ AGENTS.md
 # Лаборатория стекла: снимки и сырой отчёт исследования остаются локально
 design/glass/shots/
 design/glass/research.json
+# Профили безголового Edge, если TEMP указывает в папку лаборатории
+design/glass/vt-edge-*/

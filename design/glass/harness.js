@@ -984,8 +984,16 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 
   function renderLabel(st, s, info) {
     const label = st.label;
+    // Второй круг, уход: галочка или подпись не пропадают в первый кадр, пока стекло
+    // ещё тает ~0.25 с, а гаснут вместе с ним — с последним содержимым и на прежнем месте.
+    if (st.round === 2 && s.stage === 'hidden') {
+      const op = frozen.label === 'none' ? 0 : (st.lastOpacity || 0) * Math.exp(-s.t / 0.07);
+      label.style.opacity = op > 0.01 ? String(op) : '0';
+      return;
+    }
     const show = s.stage !== 'hidden' && info.labelOpacity > 0.01 && !info.hideLabel && frozen.label !== 'none';
     label.style.opacity = show ? String(info.labelOpacity) : '0';
+    st.lastOpacity = show ? info.labelOpacity : 0;
     if (!show) return;
     const key = `${s.stage}|${s.text.title}|${s.text.detail}`;
     if (key !== st.lastLabel) {

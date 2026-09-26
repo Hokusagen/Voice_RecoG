@@ -20,8 +20,9 @@ from shoot import cleanup, parse, shoot
 
 
 # Консоль Windows по умолчанию в cp1251: без этого кириллица в выводе превращается в «????».
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def lin(c: float) -> float:

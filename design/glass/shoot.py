@@ -25,6 +25,7 @@ PNG кладёт в shots/<id>/ (с VT_TAG=метка — в shots/<id>/<мет�
 
 import os
 import re
+import shutil
 import subprocess
 import time
 import sys
@@ -43,8 +44,9 @@ NOISE = ("GPU", "gpu", "SwiftShader", "DevTools", "Fontconfig", "dbus", "sandbox
 
 
 # Консоль Windows по умолчанию в cp1251: без этого кириллица в выводе превращается в «????».
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def parse(spec: str) -> dict:
@@ -99,7 +101,7 @@ def shots_dir(concept: str) -> Path:
 
 
 def edge(concept: str, url: str, *, screenshot: Path | None = None, budget_ms: int = 1500,
-         dump_dom: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
+         dump_dom: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
     """Запуск безголового Edge. Снимок готов за ~1.5 с, но потом Edge на этой машине
     ещё ~19 с не выходит, поэтому ждём сам результат и завершаем процесс сами."""
     cmd = [EDGE, "--headless=new", f"--user-data-dir={profile(concept)}", "--no-first-run",
@@ -158,7 +160,12 @@ def shoot(concept: str, spec: str, extra: dict | None = None, suffix: str = "") 
     if out.exists():
         out.unlink()
     budget = p["legacy_ms"] if p["legacy_ms"] is not None else 1500
-    run = edge(concept, url_for(concept, p, extra), screenshot=out, budget_ms=budget)
+    # Под параллельной нагрузкой Edge иногда не пишет PNG совсем: один повтор
+    # почти всегда снимает, а ждать без него — дыра в листе ряда.
+    for _ in range(2):
+        run = edge(concept, url_for(concept, p, extra), screenshot=out, budget_ms=budget)
+        if png_ready(out):
+            break
     return out, console_errors(run)
 
 
@@ -171,6 +178,8 @@ def cleanup(concept: str) -> int:
           "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; 1 } | Measure-Object | "
           "Select-Object -ExpandProperty Count")
     run = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+    # Профиль весит ~40 МБ: сотни профилей агентов забили диск C: целиком.
+    shutil.rmtree(profile(concept), ignore_errors=True)
     try:
         return int((run.stdout or "0").strip() or 0)
     except ValueError:
