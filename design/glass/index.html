@@ -33,11 +33,14 @@
   h1 { font: 700 clamp(34px, 5.4vw, 60px)/1.02 var(--display); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
   .lede { max-width: 68ch; color: #c9ccd4; margin: 0; }
   .lede strong { color: var(--text); font-weight: 600; }
+  .answers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px 22px; margin: 6px 0 0; padding: 0; list-style: none; }
+  .answers li { display: grid; gap: 4px; font-size: 14px; color: #c9ccd4; }
+  .answers b { font: 500 11px/1.3 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 
   .controls {
     position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10; margin-block: 8px 28px;
     display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; padding: 12px 14px;
-    background: rgba(11, 12, 16, 0.82); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    background: rgba(11, 12, 16, 0.86); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4);
     border: 1px solid var(--line); border-radius: 14px;
   }
   .group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -49,26 +52,36 @@
   .seg button[aria-pressed="true"] { background: #232836; color: var(--text); }
   .seg button:hover { color: var(--text); }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  /* Что «продиктовано» в текущем «Готово»: на плашке текста нет, поэтому повод реакции — здесь. */
+  .said { flex-basis: 100%; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; min-height: 22px; font-size: 14px; color: #c9ccd4; border-top: 1px solid var(--line); padding-top: 10px; }
+  .said > span:first-child { font: 500 11px/1 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+  .said q { color: var(--text); }
+  .said .mood { font: 500 12px/1 var(--mono); color: var(--ok); }
+
+  .round { display: grid; gap: 6px; padding-block: 44px 8px; border-top: 1px solid var(--line); }
+  .round h2 { font: 700 clamp(26px, 3.6vw, 40px)/1.05 var(--display); letter-spacing: -0.015em; margin: 0; text-wrap: balance; }
+  .round p { margin: 0; max-width: 70ch; color: #c9ccd4; }
 
   .concept { display: grid; gap: 18px; padding-block: 34px; border-top: 1px solid var(--line); }
   .concept-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
   .num { font: 500 13px/1 var(--mono); color: var(--muted); }
-  .concept h2 { font: 500 clamp(24px, 3.2vw, 34px)/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
+  .concept h3.name { font: 500 clamp(24px, 3.2vw, 34px)/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
   .pitch { margin: 0; color: #c9ccd4; max-width: 70ch; }
   .demo { height: clamp(300px, 34vw, 400px); border-radius: 18px; border: 1px solid var(--line); }
   .hint { font: 400 12px/1.4 var(--mono); color: var(--muted); margin-top: -8px; }
 
   .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
-  .facts h3 { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .facts h4 { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
   .facts p, .facts li { margin: 0; color: #cfd2da; font-size: 15px; }
   .facts ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
   .facts li::marker { color: var(--muted); }
+  .facts .stack { display: grid; gap: 12px; }
   .badge { display: inline-flex; align-items: center; gap: 7px; font: 500 12px/1 var(--mono); padding: 6px 9px; border-radius: 8px;
     border: 1px solid var(--line); background: var(--surface); margin-bottom: 10px; }
   .badge.go { color: var(--ok); } .badge.lag { color: var(--warn); } .badge.mix { color: var(--ice); }
 
   .compare { padding-block: 40px 10px; border-top: 1px solid var(--line); display: grid; gap: 18px; }
-  .compare h2 { font: 500 clamp(22px, 3vw, 30px)/1.1 var(--display); margin: 0; }
+  .compare h3 { font: 500 clamp(22px, 3vw, 30px)/1.1 var(--display); margin: 0; }
   .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
   table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 14px; }
   th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -77,11 +90,13 @@
   td.yes { color: var(--ok); } td.no { color: var(--muted); } td.part { color: var(--warn); }
 
   .notes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; padding-block: 30px 0; }
-  .notes h3 { font: 500 16px/1.3 var(--body); margin: 0 0 8px; }
+  .notes h4 { font: 500 16px/1.3 var(--body); margin: 0 0 8px; }
   .notes p { margin: 0; color: #c9ccd4; font-size: 15px; }
+  .verdict { max-width: 72ch; color: #c9ccd4; margin: 0; }
 
+  @media (max-width: 860px) { .answers { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 760px) {
-    .facts, .notes { grid-template-columns: 1fr; }
+    .facts, .notes, .answers { grid-template-columns: 1fr; }
     .controls { position: static; }
   }
   @media (prefers-reduced-motion: reduce) { .lg-label { transition: none; } }
@@ -89,9 +104,15 @@
 
 <div class="wrap">
   <header class="intro">
-    <div class="eyebrow">VoiceTyper · плашка диктовки · концепты</div>
-    <h1>Шесть стёкол</h1>
-    <p class="lede" id="lede">Шесть живых вариантов плашки. За каждой — «экран»: редактор, документ или обои, которые прокручиваются, чтобы было видно, как стекло ломает свет. Состояния идут по кругу сами, голос имитируется. Колесо мыши над демо прокручивает фон.</p>
+    <div class="eyebrow">VoiceTyper · плашка диктовки · второй круг</div>
+    <h1>Три тела Дарви</h1>
+    <p class="lede" id="lede">Плашка стала персонажем — Дарви. Из шести стёкол первого круга собраны три варианта на одном материале Линзы. Каждый слушает голос, думает формой, откликается на продиктованное и умеет два темперамента. <strong>Смотрите вживую:</strong> состояния идут по кругу, голос имитируется, колесо мыши над демо прокручивает фон.</p>
+    <ul class="answers" aria-label="Что изменилось по вашим ответам">
+      <li><b>Голос</b>Показан в каждом варианте: заметно и органично, без вспышек на слог.</li>
+      <li><b>Обработка</b>Форма и есть статус: «думающий» диск без подписи.</li>
+      <li><b>Готово</b>Без текста — он уже вставлен под курсор. Галочка, зелёная кромка и реакция.</li>
+      <li><b>Темперамент</b>Кот или живее — переключатель ниже, на лету.</li>
+    </ul>
   </header>
 
   <nav class="controls" aria-label="Управление демо">
@@ -124,46 +145,99 @@
         <button type="button" id="st-error" data-stage="error" aria-pressed="false"><i class="dot" style="background:var(--rec)"></i>Ошибка</button>
       </div>
     </div>
+    <div class="group"><span>Реакция</span>
+      <div class="seg" role="group" aria-label="Реакция Дарви в «Готово»">
+        <button type="button" id="re-auto" data-reaction="auto" aria-pressed="true">По кругу</button>
+        <button type="button" id="re-none" data-reaction="none" aria-pressed="false">Без</button>
+        <button type="button" id="re-joy" data-reaction="joy" aria-pressed="false">Радость</button>
+        <button type="button" id="re-sad" data-reaction="sad" aria-pressed="false">Грусть</button>
+      </div>
+    </div>
+    <div class="group"><span>Темперамент</span>
+      <div class="seg" role="group" aria-label="Темперамент Дарви">
+        <button type="button" id="tm-cat" data-temper="0" aria-pressed="true">Кот</button>
+        <button type="button" id="tm-lively" data-temper="1" aria-pressed="false">Живее</button>
+      </div>
+    </div>
+    <div class="said" aria-live="polite"><span>Продиктовано</span><span id="said">—</span></div>
   </nav>
 
-  <main id="concepts"></main>
+  <section class="round" aria-labelledby="r2-title">
+    <div class="eyebrow">Итерация 2 · 26 сентября</div>
+    <h2 id="r2-title">Линза·Свет, Ртуть, Зерно</h2>
+    <p id="r2-lede"></p>
+  </section>
+  <main id="concepts2"></main>
+  <section class="compare" aria-labelledby="cmp2-title">
+    <h3 id="cmp2-title">Три варианта рядом</h3>
+    <p class="verdict" id="verdict2"></p>
+    <div class="notes" id="notes2"></div>
+  </section>
 
+  <section class="round" aria-labelledby="r1-title">
+    <div class="eyebrow">Итерация 1 · шесть концептов</div>
+    <h2 id="r1-title">Шесть стёкол</h2>
+    <p>Шесть живых вариантов плашки первого круга — для сравнения. За каждой — «экран»: редактор, документ или обои, которые прокручиваются, чтобы было видно, как стекло ломает свет. Итоги отзывов: от Линзы взят материал, от Ртути — метаморфозы, от Сияния — цвета итогов, от Острова — «думающий» морф.</p>
+  </section>
+  <div id="concepts"></div>
   <section class="compare" aria-labelledby="cmp-title">
-    <h2 id="cmp-title">Сравнение</h2>
+    <h3 id="cmp-title">Сравнение первого круга</h3>
     <div class="table-wrap"><table id="cmp"></table></div>
     <div class="notes" id="notes"></div>
   </section>
 </div>
 
 <script src="harness.js"></script>
+<script src="kit.js"></script>
 <script src="concepts.js"></script>
+<script src="concepts2.js"></script>
 <script>
-  // Описания концептов лежат в concepts.js: страница строится из них.
+  // Тексты концептов лежат в concepts.js (первый круг) и concepts2.js (второй): страница строится из них.
   (function () {
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    function section(c, facts) {
+      const el = document.createElement('section');
+      el.className = 'concept';
+      el.id = c.id;
+      el.setAttribute('aria-labelledby', `${c.id}-title`);
+      el.innerHTML = `
+        <div class="concept-head"><span class="num">${c.num}</span><h3 class="name" id="${c.id}-title">${c.name}</h3></div>
+        <p class="pitch">${c.pitch}</p>
+        <div class="demo" data-concept="${c.id}" role="img" aria-label="Живое демо: ${esc(c.name)}"></div>
+        <div class="hint">колесо мыши или перетаскивание над демо — прокрутка фона</div>
+        <div class="facts">${facts}</div>`;
+      return el;
+    }
+    const win = (w) => `<div><h4>На Windows</h4><div class="badge ${w.kind}">${w.badge}</div><p>${w.text}</p></div>`;
+
+    const main2 = document.getElementById('concepts2');
+    document.getElementById('r2-lede').innerHTML = window.ROUND2.lede;
+    for (const c of window.CONCEPTS2) {
+      main2.appendChild(section(c, `
+        <div><h4>Что происходит</h4><ul>${c.states.map((s) => `<li>${s}</li>`).join('')}</ul></div>
+        <div class="stack">
+          <div><h4>Голос</h4><p>${c.voice}</p></div>
+          <div><h4>Реакции</h4><p>${c.reaction}</p></div>
+          <div><h4>Кот и живее</h4><p>${c.temper}</p></div>
+        </div>
+        ${win(c.windows)}`));
+    }
+    document.getElementById('verdict2').innerHTML = window.ROUND2.verdict;
+    document.getElementById('notes2').innerHTML = window.NOTES2.map((n) => `<div><h4>${n.title}</h4><p>${n.text}</p></div>`).join('');
+
     const main = document.getElementById('concepts');
     for (const c of window.CONCEPTS) {
-      const section = document.createElement('section');
-      section.className = 'concept';
-      section.id = c.id;
-      section.setAttribute('aria-labelledby', `${c.id}-title`);
-      section.innerHTML = `
-        <div class="concept-head"><span class="num">${c.num}</span><h2 id="${c.id}-title">${c.name}</h2></div>
-        <p class="pitch">${c.pitch}</p>
-        <div class="demo" data-concept="${c.id}" role="img" aria-label="Живое демо: ${c.name}"></div>
-        <div class="hint">колесо мыши или перетаскивание над демо — прокрутка фона</div>
-        <div class="facts">
-          <div><h3>Что происходит</h3><ul>${c.states.map((s) => `<li>${s}</li>`).join('')}</ul></div>
-          <div><h3>Откуда идея</h3><ul>${c.sources.map((s) => `<li><a href="${s.url}" target="_blank" rel="noopener">${s.title}</a>${s.note ? ' — ' + s.note : ''}</li>`).join('')}</ul></div>
-          <div><h3>На Windows</h3><div class="badge ${c.windows.kind}">${c.windows.badge}</div><p>${c.windows.text}</p></div>
-        </div>`;
-      main.appendChild(section);
+      main.appendChild(section(c, `
+        <div><h4>Что происходит</h4><ul>${c.states.map((s) => `<li>${s}</li>`).join('')}</ul></div>
+        <div><h4>Откуда идея</h4><ul>${c.sources.map((s) => `<li><a href="${s.url}" target="_blank" rel="noopener">${s.title}</a>${s.note ? ' — ' + s.note : ''}</li>`).join('')}</ul></div>
+        ${win(c.windows)}`));
     }
     const table = document.getElementById('cmp');
     const cols = window.COMPARE.columns;
     table.innerHTML = `<thead><tr><th>Концепт</th>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${
       window.COMPARE.rows.map((r) => `<tr><td>${r.name}</td>${r.cells.map(([cls, text]) => `<td class="${cls}">${text}</td>`).join('')}</tr>`).join('')
     }</tbody>`;
-    document.getElementById('notes').innerHTML = window.NOTES.map((n) => `<div><h3>${n.title}</h3><p>${n.text}</p></div>`).join('');
+    document.getElementById('notes').innerHTML = window.NOTES.map((n) => `<div><h4>${n.title}</h4><p>${n.text}</p></div>`).join('');
 
     function press(selector, button) {
       document.querySelectorAll(selector).forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
@@ -175,8 +249,30 @@
       if (b.dataset.stage === 'auto') LG.setAuto(true); else LG.show(b.dataset.stage);
       press('[data-stage]', b);
     }));
+    document.querySelectorAll('[data-reaction]').forEach((b) => b.addEventListener('click', () => {
+      LG.setReaction(b.dataset.reaction);
+      press('[data-reaction]', b);
+      // Реакцию видно сразу, если круг сейчас стоит на «Готово».
+      if (LG.clocks[2].stage === 'done' && !LG.clocks[2].auto) LG.show('done');
+    }));
+    document.querySelectorAll('[data-temper]').forEach((b) => b.addEventListener('click', () => { LG.setTemper(Number(b.dataset.temper)); press('[data-temper]', b); }));
+
+    // Строка «продиктовано»: повод реакции Дарви, раз на плашке текста нет.
+    const said = document.getElementById('said');
+    const MOODS = { joy: 'Дарви радуется вместе с вами', sad: 'Дарви бережно сочувствует' };
+    LG.onStage((name, info) => {
+      if (info.round !== 2) return;
+      if (name === 'done') {
+        said.innerHTML = `<q>${esc(info.phrase)}</q>` + (info.emotion ? ` <span class="mood">→ ${MOODS[info.emotion]}</span>` : ' <span class="mood" style="color:var(--muted)">→ без эмоции, обычное «Готово»</span>');
+      } else if (name === 'listening') {
+        said.textContent = 'идёт диктовка…';
+      } else if (name === 'error') {
+        said.textContent = 'ничего не расслышано';
+      }
+    });
+
     // Каждый концепт — свой файл; грузим после того, как появились места под демо.
-    for (const c of window.CONCEPTS) {
+    for (const c of [...window.CONCEPTS2, ...window.CONCEPTS]) {
       const script = document.createElement('script');
       script.src = `${c.id}.js`;
       document.body.appendChild(script);
