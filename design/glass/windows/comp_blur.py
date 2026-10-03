@@ -248,8 +248,11 @@ class GaussianBlurEffect:
     """
 
     def __init__(self, source: int, deviation: float = 0.0, name: str = "Blur",
-                 clsid: GUID | None = None, props=None, sources=None) -> None:
+                 clsid: GUID | None = None, props=None, sources=None, names=None) -> None:
         self.source = source
+        # Имена свойств как у Win2D (GetNamedPropertyMapping). Для постоянных значений
+        # композитору хватает индексов; имена нужны, чтобы свойство можно было анимировать.
+        self.names = names if names is not None else {"BlurAmount": 0, "Optimization": 1, "BorderMode": 2}
         self.deviation = deviation
         self.name = name
         self.clsid = clsid or CLSID_D2D1GaussianBlur
@@ -338,12 +341,10 @@ class GaussianBlurEffect:
         ctypes.memmove(out, byref(self.clsid), sizeof(GUID))
         return S_OK
 
-    _NAMES = {"BlurAmount": 0, "Optimization": 1, "BorderMode": 2}
-
     def _mapping(self, _this, name, index, mapping):
-        if name not in self._NAMES:
+        if name not in self.names:
             return E_INVALIDARG
-        index[0] = self._NAMES[name]
+        index[0] = self.names[name]
         mapping[0] = 1  # GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT
         return S_OK
 
