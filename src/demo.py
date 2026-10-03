@@ -106,8 +106,8 @@ class MicVoice:
         return self._level
 
 
-def voice_panel(hud, sources: dict, choice: dict) -> QWidget:
-    """Переключатели вида голоса и источника звука для демо «voice»."""
+def voice_panel(sources: dict, choice: dict) -> QWidget:
+    """Переключатель источника звука для демо «voice»: свой микрофон или синтетика."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QButtonGroup, QLabel, QRadioButton, QVBoxLayout
 
@@ -115,15 +115,6 @@ def voice_panel(hud, sources: dict, choice: dict) -> QWidget:
     panel.setWindowTitle("Голос на плашке")
     panel.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
     layout = QVBoxLayout(panel)
-    styles = {"tide": "Прилив — свет снизу капсулы", "drop": "Капля — пятна справа от заголовка"}
-    layout.addWidget(QLabel("Вид голоса:"))
-    group = QButtonGroup(panel)
-    for index, (key, title) in enumerate(styles.items()):
-        button = QRadioButton(title)
-        button.setChecked(getattr(hud, "voice_style", "tide") == key)
-        button.toggled.connect(lambda on, key=key: on and setattr(hud, "voice_style", key))
-        group.addButton(button, index)
-        layout.addWidget(button)
     layout.addWidget(QLabel("Звук:"))
     sound = QButtonGroup(panel)
     for index, key in enumerate(sources):
@@ -231,7 +222,7 @@ def main() -> int:
     print("Демо HUD. Ctrl+C в терминале, чтобы закрыть.\n")
     if voice_only:
         voice.speaking = True
-        state["panel"] = voice_panel(state["hud"], sources, choice)
+        state["panel"] = voice_panel(sources, choice)
         state["hud"].show_status(Status(Stage.LISTENING, "Слушаю"))
     else:
         advance()

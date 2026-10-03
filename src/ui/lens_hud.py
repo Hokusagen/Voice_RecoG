@@ -53,8 +53,8 @@ from ui.motion import Spring, clamp01, ease_in_out, ease_out_cubic, smooth
 
 PILL_H = 56
 MAX_W = theme.PILL_MAX_WIDTH
-#: Место под голос в «Слушаю» между заголовком и таймером.
-VOICE_W = 96
+#: «Слушаю» — капсула без надписей: голос внутри стекла и так говорит, что идёт запись.
+LISTEN_W = 200
 #: Запас окна вокруг пилюли: тень 0.035·exp(−sd/30) уходит за 1/255 к ~60 px,
 #: и сбоку нужно место под встряску ошибки.
 MARGIN = 64
@@ -80,7 +80,6 @@ LABEL_PAD = 8
 #: Слог — атака 70 мс, спад 280 мс; фраза поверх слога — 250 мс и 0.9 с. Форму
 #: ведёт фраза: на каждом слоге плашка не дёргается, а «говорю / молчу» видно сразу.
 VOICE_DB = (-56.0, -6.0)
-VOICE_STYLES = ("tide", "drop")
 
 #: Думающий диск (island.js): лепестки по кругу и их глубина в долях радиуса.
 LOBES = (5, 7, 4)
@@ -126,8 +125,6 @@ class _Target:
     icon_size: float = ICON
     label_x: float = 0.0
     label_w: float = 0.0
-    voice_x0: float = 0.0
-    voice_x1: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -150,7 +147,7 @@ class _Params(Structure):
     _fields_ = [(name, c_float * 4) for name in (
         "view", "pill", "glass", "light", "status", "tone", "label", "label_fx", "icon", "icon_fx",
         "icon_dark", "icon_light", "title_dark", "title_light", "detail_dark", "detail_light",
-        "morph", "morph_n", "voice", "voice_area")]
+        "morph", "morph_n", "voice")]
 
 
 # ---------- движение ----------
@@ -206,8 +203,7 @@ class _Motion:
         return clamp01(on), self.phrase, self.syllable, self.flow
 
     def step(self, dt: float, now: float, tgt: _Target, light_bg: bool, applied_key, frame: int,
-             view: tuple[int, int], S: float, params: _Params, level: float = 0.0,
-             style: int = 0) -> tuple[_Geometry, bool]:
+             view: tuple[int, int], S: float, params: _Params, level: float = 0.0) -> tuple[_Geometry, bool]:
         """Шаг пружин и заполнение констант. Возвращает геометрию и «растаяла ли плашка»."""
         shown = tgt.shown
         if tgt.version != self.version:
@@ -375,8 +371,8 @@ class _Motion:
         p.morph[:] = (f, LOBE_AMP[ia], LOBE_AMP[ib], self.morph.value)
         p.morph_n[:] = (LOBES[ia], LOBES[ib], rot, 0.0)
         on, phrase, syllable, flow = self.voice(dt, level, shown and tgt.stage is Stage.LISTENING)
-        p.voice[:] = (on * label_opacity if has_label else 0.0, phrase, syllable, flow)
-        p.voice_area[:] = (cx + tgt.voice_x0 * S, cx + tgt.voice_x1 * S, float(style), 0.0)
+        # Голос проступает вместе со стеклом и тает раньше него.
+        p.voice[:] = (on * smooth(0.8, 0.97, mc), phrase, syllable, flow)
 
         vanished = not shown and mc < 0.003 and self.label_opacity < 0.003
         return geometry, vanished
@@ -487,8 +483,6 @@ class LensHud(QObject):
         self._build_composition()
 
         self._telemetry: Callable[[], tuple[float, float]] = lambda: (0.0, 0.0)
-        #: Вид голоса в «Слушаю»: VOICE_STYLES; демо переключает его на лету.
-        self.voice_style = cfg.voice_style
         self._status = Status(stage=Stage.IDLE)
         self._lock = threading.Lock()
         self._target = _Target()
@@ -505,10 +499,8 @@ class LensHud(QObject):
         self._visible = False
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._timer_text = ""
 
         self._title_font = theme.title_font()
-        self._timer_font = theme.timer_font()
 
         self._tick = QTimer(self)
         self._tick.setInterval(16)
@@ -559,7 +551,7 @@ class LensHud(QObject):
     # ---------- внешнее управление ----------
 
     def set_telemetry(self, source: Callable[[], tuple[float, float]]) -> None:
-        """Источник пары «громкость, секунды записи»: таймер в «Слушаю»."""
+        """Источник пары «громкость, секунды записи»: громкость ведёт голос в «Слушаю»."""
         self._telemetry = source
 
     def show_status(self, status: Status) -> None:
@@ -622,8 +614,12 @@ class LensHud(QObject):
         # Над светлым цвет значка притемнён: зелёная галочка на белом иначе ~1.5:1.
         dark, light = _premul(accent), _premul(theme.mix(accent, QColor(0, 0, 0), 0.35))
 
+        if stage is Stage.LISTENING:
+            self._render_label("")
+            return _Target(stage=stage, width=float(LISTEN_W), label_w=0.0)
+
         if disc:
-            self._render_label("", "")
+            self._render_label("")
             size = ICON * 1.3 if icon else ICON
             return _Target(stage=stage, width=float(PILL_H), disc=True, thinking=thinking, icon=icon,
                            icon_dark=dark, icon_light=light, icon_x=0.0, icon_size=size, label_w=0.0)
@@ -632,21 +628,14 @@ class LensHud(QObject):
         # текст. Ширина — ровно под содержимое: минимальная капсула 250 px держала
         # короткое «Отменено» в пустой рамке.
         title = status.title
-        listening = stage is Stage.LISTENING
-        timer = self._timer_value() if listening else ""
-        title_font, timer_font = self._scaled(self._title_font, S), self._scaled(self._timer_font, S)
-        timer_room = (QFontMetrics(timer_font).horizontalAdvance("00:00") / S + 12) if listening else 0.0
-        voice_room = VOICE_W if listening else 0.0
-        limit = MAX_W - 2 * PAD - ICON - GAP - 8 - timer_room - voice_room
-        text_w = min(limit, QFontMetrics(title_font).horizontalAdvance(title) / S)
-        column = text_w + voice_room + timer_room
-        block = ICON + GAP + column
+        title_font = self._scaled(self._title_font, S)
+        text_w = min(MAX_W - 2 * PAD - ICON - GAP - 8, QFontMetrics(title_font).horizontalAdvance(title) / S)
+        block = ICON + GAP + text_w
         width = min(MAX_W, max(PILL_H * 2.0, block + 2 * PAD + 8))
-        self._render_label(title, timer, text_w, column)
-        label_x = -block / 2.0 + ICON + GAP
+        self._render_label(title, text_w)
         return _Target(stage=stage, width=float(width), icon=icon, icon_dark=dark, icon_light=light,
-                       icon_x=-block / 2.0 + ICON / 2.0, icon_size=ICON, label_x=label_x, label_w=column,
-                       voice_x0=label_x + text_w + 10.0, voice_x1=label_x + text_w + voice_room - 4.0)
+                       icon_x=-block / 2.0 + ICON / 2.0, icon_size=ICON,
+                       label_x=-block / 2.0 + ICON + GAP, label_w=text_w)
 
     @staticmethod
     def _scaled(font: QFont, S: float) -> QFont:
@@ -654,41 +643,31 @@ class LensHud(QObject):
         scaled.setPixelSize(max(1, round(font.pixelSize() * S)))
         return scaled
 
-    def _render_label(self, title: str, timer: str, text_w: float = 0.0, column: float = 0.0) -> None:
-        """Подпись в текстуру: заголовок в красном канале, таймер — в зелёном.
+    def _render_label(self, title: str, text_w: float = 0.0) -> None:
+        """Заголовок в текстуру — маской покрытия в красном канале.
 
-        Каналы — маски покрытия, цвет и ореол по тону фона добавляет шейдер:
-        при смене светлого фона на тёмный текстуру не нужно перерисовывать.
+        Цвет и ореол по тону фона добавляет шейдер: при смене светлого фона на
+        тёмный текстуру не нужно перерисовывать.
         """
         S = self._px
         width, height = self._view
         pixels = np.zeros((height, width, 4), dtype=np.uint8)
-        if title or timer:
+        if title:
             image = QImage(pixels.data, width, height, width * 4, QImage.Format_ARGB32_Premultiplied)
             painter = QPainter(image)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
             pad = math.ceil(LABEL_PAD * S)
             painter.translate(pad, pad)
-            row = QRectF(0, 0, column * S, PILL_H * S)
-            if title:
-                font = self._scaled(self._title_font, S)
-                text_px = int(text_w * S)
-                painter.setFont(font)
-                painter.setPen(QColor(255, 0, 0))
-                painter.drawText(QRectF(0, 0, text_px, PILL_H * S), Qt.AlignVCenter | Qt.AlignLeft,
-                                 QFontMetrics(font).elidedText(title, Qt.ElideRight, text_px))
-            if timer:
-                painter.setFont(self._scaled(self._timer_font, S))
-                painter.setPen(QColor(0, 255, 0))
-                painter.drawText(row, Qt.AlignVCenter | Qt.AlignRight, timer)
+            font = self._scaled(self._title_font, S)
+            text_px = int(text_w * S)
+            painter.setFont(font)
+            painter.setPen(QColor(255, 0, 0))
+            painter.drawText(QRectF(0, 0, text_px, PILL_H * S), Qt.AlignVCenter | Qt.AlignLeft,
+                             QFontMetrics(font).elidedText(title, Qt.ElideRight, text_px))
             painter.end()
         with self._lock:
             self._text_pixels = pixels
             self._text_fresh = True
-
-    def _timer_value(self) -> str:
-        _level, elapsed = self._telemetry()
-        return f"{int(elapsed) // 60}:{int(elapsed) % 60:02d}"
 
     # ---------- окно и потоки ----------
 
@@ -802,18 +781,6 @@ class LensHud(QObject):
         elif self._applied_geometry is not None:
             self._hide_interior()
 
-        if self._status.stage is Stage.LISTENING:
-            timer = self._timer_value()
-            if timer != self._timer_text:
-                self._timer_text = timer
-                self._layout_keep_version(self._status)
-
-    def _layout_keep_version(self, status: Status) -> None:
-        """Перерисовка подписи без смены статуса: таймер тикает раз в секунду."""
-        target = self._layout(status)
-        with self._lock:
-            self._target = replace(target, version=self._target.version, shown=self._target.shown)
-
     # ---------- фоновые потоки ----------
 
     @staticmethod
@@ -878,9 +845,8 @@ class LensHud(QObject):
                 if text is not None:
                     self._gpu.upload(self._text, text.ctypes.data, text.strides[0])
                 level = self._telemetry()[0] if target.stage is Stage.LISTENING else 0.0
-                style = VOICE_STYLES.index(self.voice_style) if self.voice_style in VOICE_STYLES else 0
                 geometry, vanished = motion.step(dt, now - started, target, light_bg, applied, frame,
-                                                 self._view, S, p, level, style)
+                                                 self._view, S, p, level)
                 with self._lock:
                     self._geometry = geometry
                 self._gpu.draw(p, [self._scene, self._text])

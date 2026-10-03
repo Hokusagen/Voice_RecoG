@@ -34,7 +34,6 @@ cbuffer Params : register(b0) {
     float4 uMorph;     // x — сила лепестков, y — глубина A, z — глубина B, w — прогресс A→B
     float4 uMorphN;    // x — лепестков A, y — лепестков B, z — поворот
     float4 uVoice;     // x — видимость, y — фраза, z — слог, w — фаза течения
-    float4 uVoiceArea; // x0, x1 — место капли между заголовком и таймером; z — вид (0 прилив, 1 капля)
 };
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
@@ -168,50 +167,37 @@ float4 voiceLight(float3 c, float a, float tone) {
     return float4(c * (aOver + add), aOver);
 }
 
-// «Прилив» (Gemini + Siri): снизу капсулы цветное свечение. Во время фразы оно
-// собирается выше и плотнее, по верху идёт медленная волна; в паузе оседает и
-// бледнеет — рассеивается, но не гаснет: микрофон слушает.
+// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три волны света — синяя,
+// фиолетовая, розовая, — каждая своей частоты, средняя идёт навстречу двум
+// другим. Задние стоят выше передних, и цвета лежат пластами. Высоту ведёт
+// фраза: во время речи пласты поднимаются и густеют, в паузе оседают в тонкую
+// бледную полосу у дна. Слог только раскачивает гребни — без рывков формы.
 float4 voiceTide(float2 p, float S, float cover, float tone) {
     float ph = uVoice.y, sy = uVoice.z, fl = uVoice.w;
     float w = uPill.z, h = uPill.w;
     float u = (p.x - (uPill.x - 0.5 * w)) / max(w, 1.0);
     float depth = (uPill.y + 0.5 * h - p.y) / h;
-    float level = 0.10 + 0.30 * ph + 0.05 * sy;
-    float surf = level * (1.0 + 0.22 * sin(u * 7.0 + fl * 6.2832) + 0.12 * sin(u * 15.0 - fl * 9.0 + 1.7));
-    float above = (depth - surf) * h / S;
-    float body = exp(-max(above, 0.0) / (4.0 + 4.0 * ph));
-    float crest = exp(-abs(above) / 2.0) * ph * 0.55;
-    float I = (0.26 + 0.42 * ph) * body + crest;
-    float3 c = voicePal(u * 1.4 + fl * 0.6 + 0.3 * sin(fl * 1.3 + u * 2.0));
-    c = lerp(lerp(c, 1.0, 0.35), c, saturate(ph * 1.4));
-    return voiceLight(c, saturate(I) * uVoice.x * cover, tone);
-}
-
-// «Капля» (Siri iOS 27): между заголовком и таймером перетекают три цветных
-// пятна. Во время фразы они собираются к середине, вырастают и ярчают; в паузе
-// расходятся, съёживаются и бледнеют.
-float4 voiceDrop(float2 p, float S, float cover, float tone) {
-    float ph = uVoice.y, sy = uVoice.z, fl = uVoice.w;
-    float x0 = uVoiceArea.x, span = max(uVoiceArea.y - uVoiceArea.x, 1.0);
-    float u = (p.x - x0) / span;
-    if (u < -0.35 || u > 1.35) return 0.0;
-    float window = smoothstep(-0.1, 0.18, u) * smoothstep(1.1, 0.82, u);
-    float ry = (4.0 + 11.0 * ph + 2.5 * sy) * S;
-    float rx = span * (0.16 + 0.10 * ph);
-    float3 acc = 0.0; float sum = 0.0;
-    [unroll] for (int i = 0; i < 3; i++) {
-        float fi = (float)i;
-        float cxp = x0 + span * (0.5 + (0.30 - 0.10 * ph) * sin(fl * (2.1 + 0.7 * fi) + fi * 2.09));
-        float cyp = uPill.y + ry * 0.25 * sin(fl * 1.7 + fi * 1.3);
-        float2 d = (p - float2(cxp, cyp)) / float2(rx, ry);
-        float b = exp(-dot(d, d));
-        acc += b * voicePal(fi + fl * 0.3);
-        sum += b;
+    float4 acc = 0.0;
+    [unroll] for (int k = 0; k < 3; k++) {
+        float fk = (float)k;
+        float dir = k == 1 ? -1.25 : 1.0 + 0.35 * fk;
+        float freq = 4.5 + 2.6 * fk;
+        float level = 0.07 + (0.52 - 0.13 * fk) * ph + (0.05 + 0.02 * fk) * sy;
+        float swing = 0.12 + 0.16 * ph + 0.22 * sy;
+        float surf = level * (1.0 + swing * sin(u * freq + fl * 6.2832 * dir + fk * 2.1)
+                                  + 0.45 * swing * sin(u * freq * 2.3 - fl * 4.4 * dir + fk * 1.3));
+        float above = (depth - surf) * h / S;
+        // Пласт — залитая полоса: ярче под гребнем, тускнеет ко дну, над гребнем мягкий
+        // ореол. Гребень размыт: тонкая яркая линия превращала пласты в струны SiriWave.
+        float halo = exp(-max(above, 0.0) / (3.0 + 3.0 * ph));
+        float body = above < 0.0 ? lerp(0.45, 1.0, exp(above / (6.0 + 8.0 * ph))) : 1.0;
+        float crest = exp(-abs(above) / 3.0) * (0.12 + 0.22 * ph);
+        float I = (halo * body * (0.26 + 0.5 * ph) + crest) * (1.0 - 0.1 * fk);
+        float3 c = voicePal(fk + u * 0.7 + fl * (0.35 + 0.12 * fk));
+        c = lerp(lerp(c, 1.0, 0.3), c, saturate(ph * 1.4));
+        acc = over(voiceLight(c, saturate(I) * uVoice.x * cover, tone), acc);
     }
-    float3 c = acc / max(sum, 1e-4);
-    c = lerp(lerp(c, 1.0, 0.3), c, saturate(ph * 1.4));
-    float I = saturate(sum) * (0.35 + 0.65 * ph) * window;
-    return voiceLight(c, I * uVoice.x * cover, tone);
+    return acc;
 }
 
 // ---------- значки: расстояния в долях рамки значка ----------
@@ -338,8 +324,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
     // ---------- голос: поверх стекла, под значком и подписью ----------
     if (uVoice.x > 0.003 && cover > 0.0) {
-        float4 v = uVoiceArea.z < 0.5 ? voiceTide(p, S, cover, tone) : voiceDrop(p, S, cover, tone);
-        result = over(v, result);
+        result = over(voiceTide(p, S, cover, tone), result);
     }
 
     // ---------- значок ----------
