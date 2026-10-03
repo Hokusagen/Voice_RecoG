@@ -398,6 +398,10 @@ class UIConfig:
     плашка (ui.hud).
     """
 
+    voice_style: str = "tide"
+    """Голос в «Слушаю» у стекла Линзы: tide — цветной прилив снизу капсулы,
+    drop — цветная капля справа от заголовка. Выбирается."""
+
     font: str = "auto"
     """Семейство шрифта: auto, Inter, Onest, Golos Text, Manrope, Segoe UI…
 

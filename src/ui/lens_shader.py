@@ -33,6 +33,8 @@ cbuffer Params : register(b0) {
     float4 uDetailDark; float4 uDetailLight;
     float4 uMorph;     // x — сила лепестков, y — глубина A, z — глубина B, w — прогресс A→B
     float4 uMorphN;    // x — лепестков A, y — лепестков B, z — поворот
+    float4 uVoice;     // x — видимость, y — фраза, z — слог, w — фаза течения
+    float4 uVoiceArea; // x0, x1 — место капли между заголовком и таймером; z — вид (0 прилив, 1 капля)
 };
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
@@ -142,6 +144,74 @@ float3 statusRim(float3 col, float2 p, float inside, float S) {
     float light = smoothstep(0.6, 0.8, lum);
     float a = min(0.9, 0.9 * (1.0 - exp(-1.5 * I * bright)) * (1.0 + 0.3 * light));
     return lerp(col, lc, a * lerp(lerp(0.72, 0.9, light), 0.58, dark)) + lc * a * 0.34 * dark;
+}
+
+// ---------- голос ----------
+
+// Палитра голоса Siri iOS 27: синий → фиолетовый → розовый и обратно в синий.
+float3 voicePal(float x) {
+    const float3 B = float3(0.247, 0.635, 1.000);
+    const float3 V = float3(0.557, 0.424, 1.000);
+    const float3 P = float3(1.000, 0.310, 0.639);
+    float y = frac(x / 3.0) * 3.0;
+    float f = smoothstep(0.0, 1.0, frac(y));
+    if (y < 1.0) return lerp(B, V, f);
+    if (y < 2.0) return lerp(V, P, f);
+    return lerp(P, B, f);
+}
+
+// Цвет поверх стекла без знания фона: над светлым — подмес (иначе свечение
+// только белит), над тёмным — меньше подмеса и сложение, свет из стекла.
+float4 voiceLight(float3 c, float a, float tone) {
+    float aOver = a * lerp(0.55, 0.82, tone);
+    float add = a * 0.38 * (1.0 - tone);
+    return float4(c * (aOver + add), aOver);
+}
+
+// «Прилив» (Gemini + Siri): снизу капсулы цветное свечение. Во время фразы оно
+// собирается выше и плотнее, по верху идёт медленная волна; в паузе оседает и
+// бледнеет — рассеивается, но не гаснет: микрофон слушает.
+float4 voiceTide(float2 p, float S, float cover, float tone) {
+    float ph = uVoice.y, sy = uVoice.z, fl = uVoice.w;
+    float w = uPill.z, h = uPill.w;
+    float u = (p.x - (uPill.x - 0.5 * w)) / max(w, 1.0);
+    float depth = (uPill.y + 0.5 * h - p.y) / h;
+    float level = 0.10 + 0.30 * ph + 0.05 * sy;
+    float surf = level * (1.0 + 0.22 * sin(u * 7.0 + fl * 6.2832) + 0.12 * sin(u * 15.0 - fl * 9.0 + 1.7));
+    float above = (depth - surf) * h / S;
+    float body = exp(-max(above, 0.0) / (4.0 + 4.0 * ph));
+    float crest = exp(-abs(above) / 2.0) * ph * 0.55;
+    float I = (0.26 + 0.42 * ph) * body + crest;
+    float3 c = voicePal(u * 1.4 + fl * 0.6 + 0.3 * sin(fl * 1.3 + u * 2.0));
+    c = lerp(lerp(c, 1.0, 0.35), c, saturate(ph * 1.4));
+    return voiceLight(c, saturate(I) * uVoice.x * cover, tone);
+}
+
+// «Капля» (Siri iOS 27): между заголовком и таймером перетекают три цветных
+// пятна. Во время фразы они собираются к середине, вырастают и ярчают; в паузе
+// расходятся, съёживаются и бледнеют.
+float4 voiceDrop(float2 p, float S, float cover, float tone) {
+    float ph = uVoice.y, sy = uVoice.z, fl = uVoice.w;
+    float x0 = uVoiceArea.x, span = max(uVoiceArea.y - uVoiceArea.x, 1.0);
+    float u = (p.x - x0) / span;
+    if (u < -0.35 || u > 1.35) return 0.0;
+    float window = smoothstep(-0.1, 0.18, u) * smoothstep(1.1, 0.82, u);
+    float ry = (4.0 + 11.0 * ph + 2.5 * sy) * S;
+    float rx = span * (0.16 + 0.10 * ph);
+    float3 acc = 0.0; float sum = 0.0;
+    [unroll] for (int i = 0; i < 3; i++) {
+        float fi = (float)i;
+        float cxp = x0 + span * (0.5 + (0.30 - 0.10 * ph) * sin(fl * (2.1 + 0.7 * fi) + fi * 2.09));
+        float cyp = uPill.y + ry * 0.25 * sin(fl * 1.7 + fi * 1.3);
+        float2 d = (p - float2(cxp, cyp)) / float2(rx, ry);
+        float b = exp(-dot(d, d));
+        acc += b * voicePal(fi + fl * 0.3);
+        sum += b;
+    }
+    float3 c = acc / max(sum, 1e-4);
+    c = lerp(lerp(c, 1.0, 0.3), c, saturate(ph * 1.4));
+    float I = saturate(sum) * (0.35 + 0.65 * ph) * window;
+    return voiceLight(c, I * uVoice.x * cover, tone);
 }
 
 // ---------- значки: расстояния в долях рамки значка ----------
@@ -264,6 +334,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         float own = max(max(smoothstep(0.2, 0.55, t), edgeZone), statusZone);
         float a = lerp(1.0, own, uGlass.w) * cover;
         result = over(float4(col * a, a), result);
+    }
+
+    // ---------- голос: поверх стекла, под значком и подписью ----------
+    if (uVoice.x > 0.003 && cover > 0.0) {
+        float4 v = uVoiceArea.z < 0.5 ? voiceTide(p, S, cover, tone) : voiceDrop(p, S, cover, tone);
+        result = over(v, result);
     }
 
     // ---------- значок ----------

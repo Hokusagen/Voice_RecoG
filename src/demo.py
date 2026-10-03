@@ -3,6 +3,7 @@
     venv\\Scripts\\python.exe src\\demo.py            все состояния, шрифт из конфига
     venv\\Scripts\\python.exe src\\demo.py fonts      короткий цикл, шрифты по очереди
     venv\\Scripts\\python.exe src\\demo.py Onest      все состояния заданным шрифтом
+    venv\\Scripts\\python.exe src\\demo.py voice      «Слушаю» без конца, голос с микрофона
 
 Выход — Ctrl+C в терминале.
 
@@ -19,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from config import Config
 from core.state import Stage, Status
@@ -84,6 +85,59 @@ class FakeVoice:
         return 0.004 + 0.16 * syllables * words * breath
 
 
+class MicVoice:
+    """Громкость с настоящего микрофона: голос на плашке оценивают своим голосом,
+    синтетика ровнее живой речи и прячет дёрганость."""
+
+    def __init__(self, device: int | None, sample_rate: int) -> None:
+        import numpy as np
+        import sounddevice as sd
+
+        self._level = 0.0
+
+        def callback(block, _frames, _time, _status) -> None:
+            self._level = float(np.sqrt(np.mean(np.square(block))))
+
+        self._stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1, dtype="float32",
+                                      blocksize=sample_rate // 33, callback=callback)
+        self._stream.start()
+
+    def level(self) -> float:
+        return self._level
+
+
+def voice_panel(hud, sources: dict, choice: dict) -> QWidget:
+    """Переключатели вида голоса и источника звука для демо «voice»."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QButtonGroup, QLabel, QRadioButton, QVBoxLayout
+
+    panel = QWidget()
+    panel.setWindowTitle("Голос на плашке")
+    panel.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
+    layout = QVBoxLayout(panel)
+    styles = {"tide": "Прилив — свет снизу капсулы", "drop": "Капля — пятна справа от заголовка"}
+    layout.addWidget(QLabel("Вид голоса:"))
+    group = QButtonGroup(panel)
+    for index, (key, title) in enumerate(styles.items()):
+        button = QRadioButton(title)
+        button.setChecked(getattr(hud, "voice_style", "tide") == key)
+        button.toggled.connect(lambda on, key=key: on and setattr(hud, "voice_style", key))
+        group.addButton(button, index)
+        layout.addWidget(button)
+    layout.addWidget(QLabel("Звук:"))
+    sound = QButtonGroup(panel)
+    for index, key in enumerate(sources):
+        button = QRadioButton(key)
+        button.setChecked(choice["source"] == key)
+        button.toggled.connect(lambda on, key=key: on and choice.update(source=key))
+        sound.addButton(button, index)
+        layout.addWidget(button)
+    screen = QApplication.primaryScreen().availableGeometry()
+    panel.move(screen.left() + 24, screen.top() + 24)
+    panel.show()
+    return panel
+
+
 #: Короткий прогон для сравнения шрифтов: только то, где виден текст.
 FONT_SCRIPT = [
     (Stage.LISTENING, "Слушаю", "отпустите клавишу, когда закончите", 3400),
@@ -107,15 +161,24 @@ def main() -> int:
     cfg = Config.load()
     argument = sys.argv[1] if len(sys.argv) > 1 else ""
     cycle_fonts = argument.lower() == "fonts"
+    voice_only = argument.lower() == "voice"
 
-    theme.init_fonts(argument if argument and not cycle_fonts else cfg.ui.font)
+    theme.init_fonts(argument if argument and not (cycle_fonts or voice_only) else cfg.ui.font)
     state = {"hud": hud_module.create(cfg.ui), "step": 0, "font": 0}
 
     voice = FakeVoice()
     elapsed = {"since": 0.0}
 
+    sources = {"синтетика": voice}
+    if voice_only:
+        try:
+            sources = {"микрофон": MicVoice(cfg.audio.device, cfg.audio.sample_rate), **sources}
+        except Exception as exc:  # noqa: BLE001 — без микрофона демо идёт на синтетике
+            print(f"Микрофон не открылся ({exc}) — голос синтетический")
+    choice = {"source": next(iter(sources))}
+
     def telemetry() -> tuple[float, float]:
-        return voice.level(), elapsed["since"]
+        return sources[choice["source"]].level(), elapsed["since"]
 
     state["hud"].set_telemetry(telemetry)
 
@@ -166,7 +229,12 @@ def main() -> int:
         QTimer.singleShot(hold, advance)
 
     print("Демо HUD. Ctrl+C в терминале, чтобы закрыть.\n")
-    advance()
+    if voice_only:
+        voice.speaking = True
+        state["panel"] = voice_panel(state["hud"], sources, choice)
+        state["hud"].show_status(Status(Stage.LISTENING, "Слушаю"))
+    else:
+        advance()
     return app.exec()
 
 
