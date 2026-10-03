@@ -326,7 +326,7 @@ class Pipeline(QObject):
         if warning:
             self._emit(Stage.WARNING, f"Вставил как есть · {warning}", text)
         else:
-            self._emit(Stage.DONE, f"Готово за {took:.1f} с", text)
+            self._emit(Stage.DONE, f"Готово за {took:.1f} с", text, inserted=True)
 
     def _transcribe(self, audio: np.ndarray, record: Record) -> str:
         """Whisper в облаке, если видеокарта отдана, иначе локальный."""
@@ -416,8 +416,8 @@ class Pipeline(QObject):
         self._journal.write(record)
         return took
 
-    def _emit(self, stage: Stage, title: str = "", detail: str = "") -> None:
-        self.status.emit(Status(stage=stage, title=title, detail=detail))
+    def _emit(self, stage: Stage, title: str = "", detail: str = "", inserted: bool = False) -> None:
+        self.status.emit(Status(stage=stage, title=title, detail=detail, inserted=inserted))
 
 
 def _note_attempt(

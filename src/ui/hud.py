@@ -112,6 +112,17 @@ def _draw_pill_shadow(painter: QPainter, pill: QRectF) -> None:
     )
 
 
+def create(cfg: UIConfig):
+    """Плашка для этой системы: стекло Линзы, где его тянет композитор, иначе прежняя."""
+    if cfg.lens_glass and sys.platform == "win32":
+        from ui.lens_hud import LensHud
+
+        lens = LensHud.create(cfg)
+        if lens is not None:
+            return lens
+    return Hud(cfg)
+
+
 class Hud(QWidget):
     def __init__(self, cfg: UIConfig) -> None:
         super().__init__()
@@ -247,6 +258,9 @@ class Hud(QWidget):
             self.dismiss()
             return
 
+        if status.inserted:
+            # Итог уже вставлен под курсор: повторять его на плашке незачем.
+            status = Status(stage=status.stage, title=status.title, inserted=True)
         self._status = status
         self._auto_hide.stop()
 
@@ -285,6 +299,8 @@ class Hud(QWidget):
         добавляем время на чтение — примерно тридцать миллисекунд на знак,
         это спокойный темп чтения с экрана.
         """
+        if status.stage is Stage.DONE and status.inserted:
+            return 2200
         hold = self.cfg.success_hold_ms
         if status.stage is Stage.DONE and status.detail:
             hold += len(status.detail) * 30

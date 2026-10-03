@@ -59,6 +59,9 @@ class Status:
     detail: str = ""
     progress: float | None = None
     """0..1 для определённого прогресса, None — бесконечная анимация."""
+    inserted: bool = False
+    """Итог диктовки уже вставлен под курсор: плашке незачем его повторять,
+    она показывает только галочку и цвет итога."""
 
     @property
     def is_transient(self) -> bool:

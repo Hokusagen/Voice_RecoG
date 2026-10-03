@@ -36,6 +36,10 @@ else:
     hiddenimports += ["pynput.keyboard._darwin" if sys.platform == "darwin" else "pynput.keyboard._xorg"]
 
 packages = ["sounddevice"]
+if sys.platform == "win32":
+    # pywinrt — набор нативных модулей по пространствам имён WinRT: анализ
+    # импортов находит только верхний пакет.
+    packages.append("winrt")
 if not LITE:
     packages += ["faster_whisper", "ctranslate2", "onnxruntime"]
 for package in packages:

@@ -16,6 +16,18 @@ pynput>=1.7; sys_platform != "win32"
 # на GDI, пакет всё равно нужен для проверки). Только Windows.
 bettercam>=1.0; sys_platform == "win32"
 
+# Стекло Линзы: системный композитор Windows через pywinrt — живая середина
+# плашки без отставания (ui.lens_hud). Только Windows 10 1809+; без пакетов
+# работает прежняя плашка.
+winrt-runtime>=3.2; sys_platform == "win32"
+winrt-Windows.Foundation>=3.2; sys_platform == "win32"
+winrt-Windows.Foundation.Numerics>=3.2; sys_platform == "win32"
+winrt-Windows.System>=3.2; sys_platform == "win32"
+winrt-Windows.UI>=3.2; sys_platform == "win32"
+winrt-Windows.UI.Composition>=3.2; sys_platform == "win32"
+winrt-Windows.UI.Composition.Desktop>=3.2; sys_platform == "win32"
+winrt-Windows.UI.Composition.Interop>=3.2; sys_platform == "win32"
+
 # Запросы к Ollama и облаку.
 requests>=2.32
 

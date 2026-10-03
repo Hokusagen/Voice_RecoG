@@ -22,7 +22,7 @@ from core.pipeline import Job, Pipeline
 from core.sounds import SoundBoard
 from core.state import Stage, Status
 from core.stt import WhisperEngine
-from ui.hud import Hud
+from ui import hud as hud_module
 from ui.tray import Tray
 
 #: Как часто проверять, не пора ли отпустить микрофон.
@@ -47,7 +47,7 @@ class Controller(QObject):
         self.journal = Journal(cfg.llm.journal, cfg.llm.journal_max_mb)
         self.corrector = Corrector(self.journal)
 
-        self.hud = Hud(cfg.ui)
+        self.hud = hud_module.create(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
 
         self.tray = Tray(cfg.ui, cfg.hotkeys, cfg.llm)

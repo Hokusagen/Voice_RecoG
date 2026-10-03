@@ -392,6 +392,12 @@ class UIConfig:
     момент появления, стекло не реагирует на прокрутку под ним.
     """
 
+    lens_glass: bool = True
+    """Стекло Линзы на системном композиторе Windows (ui.lens_hud): живая середина
+    без отставания и кромка шейдером. False или система без композиции — прежняя
+    плашка (ui.hud).
+    """
+
     font: str = "auto"
     """Семейство шрифта: auto, Inter, Onest, Golos Text, Manrope, Segoe UI…
 

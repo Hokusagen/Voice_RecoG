@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QApplication
 from config import Config
 from core.state import Stage, Status
 from ui import theme
-from ui.hud import Hud
+from ui import hud as hud_module
 
 #: Сценарий: состояние и сколько миллисекунд его показывать.
 SCRIPT = [
@@ -38,6 +38,7 @@ SCRIPT = [
             Stage.DONE,
             "Готово за 2.1 с",
             "Слушай, там в Компас-3D надо переделать спецификацию по ЕСКД.",
+            inserted=True,
         ),
         2600,
     ),
@@ -108,7 +109,7 @@ def main() -> int:
     cycle_fonts = argument.lower() == "fonts"
 
     theme.init_fonts(argument if argument and not cycle_fonts else cfg.ui.font)
-    state = {"hud": Hud(cfg.ui), "step": 0, "font": 0}
+    state = {"hud": hud_module.create(cfg.ui), "step": 0, "font": 0}
 
     voice = FakeVoice()
     elapsed = {"since": 0.0}
@@ -139,7 +140,7 @@ def main() -> int:
         old.hide()
         old.deleteLater()
 
-        fresh = Hud(cfg.ui)
+        fresh = hud_module.create(cfg.ui)
         fresh.set_telemetry(telemetry)
         state["hud"] = fresh
         print(f"\n=== шрифт: {chosen} ===")
