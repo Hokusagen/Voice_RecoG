@@ -34,6 +34,8 @@ cbuffer Params : register(b0) {
     float4 uMorph;     // x — сила лепестков, y — глубина A, z — глубина B, w — прогресс A→B
     float4 uMorphN;    // x — лепестков A, y — лепестков B, z — поворот
     float4 uVoice;     // x — видимость, y — фраза, z — слог, w — фаза течения
+    float4 uWaveH[36]; // смещения пластов прилива: 3 × 48 узлов подряд (ui.tide)
+    float4 uWaveV[36]; // их скорости
 };
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
@@ -167,36 +169,70 @@ float4 voiceLight(float3 c, float a, float tone) {
     return float4(c * (aOver + add), aOver);
 }
 
-// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три волны света — синяя,
-// фиолетовая, розовая, — каждая своей частоты, средняя идёт навстречу двум
-// другим. Задние стоят выше передних, и цвета лежат пластами. Высоту ведёт
-// фраза: во время речи пласты поднимаются и густеют, в паузе оседают в тонкую
-// бледную полосу у дна. Слог только раскачивает гребни — без рывков формы.
+// Пласты прилива считает ui.tide: связанные струны в канале пилюли. Здесь — только
+// выборка смещения и скорости по длине с гладкой интерполяцией между узлами.
+float waveNode(int i) { return uWaveH[i >> 2][i & 3]; }
+float waveSpeedNode(int i) { return uWaveV[i >> 2][i & 3]; }
+float waveAt(int layer, float u, out float speed) {
+    float fi = saturate(u) * 47.0;
+    int i0 = (int)floor(fi);
+    int i1 = min(i0 + 1, 47);
+    float f = fi - (float)i0;
+    f = f * f * (3.0 - 2.0 * f);
+    int base = layer * 48;
+    speed = lerp(waveSpeedNode(base + i0), waveSpeedNode(base + i1), f);
+    return lerp(waveNode(base + i0), waveNode(base + i1), f);
+}
+
+// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три пласта света — синий,
+// фиолетовый, розовый. Уровень пластов ведёт фраза, форму — связанные волны:
+// толчок слога бежит по верхнему пласту, отражается от торцов и с запаздыванием
+// уходит в нижние. Где пласты сходятся, свет между ними сгущается; скаты,
+// обращённые к свету стекла, ловят блик — свет внутри стекла, а не градиент поверх.
 float4 voiceTide(float2 p, float S, float cover, float tone) {
-    float ph = uVoice.y, sy = uVoice.z, fl = uVoice.w;
+    float ph = uVoice.y, fl = uVoice.w;
     float w = uPill.z, h = uPill.w;
     float u = (p.x - (uPill.x - 0.5 * w)) / max(w, 1.0);
     float depth = (uPill.y + 0.5 * h - p.y) / h;
+    float du = 1.5 * S / max(w, 1.0);
+    float2 L = uLight.xy;
     float4 acc = 0.0;
+    float surfs[3];
     [unroll] for (int k = 0; k < 3; k++) {
         float fk = (float)k;
-        float dir = k == 1 ? -1.25 : 1.0 + 0.35 * fk;
-        float freq = 4.5 + 2.6 * fk;
-        float level = 0.07 + (0.52 - 0.13 * fk) * ph + (0.05 + 0.02 * fk) * sy;
-        float swing = 0.12 + 0.16 * ph + 0.22 * sy;
-        float surf = level * (1.0 + swing * sin(u * freq + fl * 6.2832 * dir + fk * 2.1)
-                                  + 0.45 * swing * sin(u * freq * 2.3 - fl * 4.4 * dir + fk * 1.3));
+        float sp, sp2;
+        float d = waveAt(k, u, sp);
+        float d2 = waveAt(k, u + du, sp2);
+        float level = 0.08 + (0.40 - 0.10 * fk) * ph;
+        float lift = 0.24 * (0.5 + 0.5 * ph);
+        float surf = level + lift * tanh(d);
+        float surf2 = level + lift * tanh(d2);
+        surfs[k] = surf;
         float above = (depth - surf) * h / S;
-        // Пласт — залитая полоса: ярче под гребнем, тускнеет ко дну, над гребнем мягкий
-        // ореол. Гребень размыт: тонкая яркая линия превращала пласты в струны SiriWave.
+        float energy = saturate(abs(sp) * 0.35);
+        // Пласт — залитая полоса: ярче под гребнем, тускнеет ко дну, над гребнем ореол.
         float halo = exp(-max(above, 0.0) / (3.0 + 3.0 * ph));
         float body = above < 0.0 ? lerp(0.45, 1.0, exp(above / (6.0 + 8.0 * ph))) : 1.0;
-        float crest = exp(-abs(above) / 3.0) * (0.12 + 0.22 * ph);
-        float I = (halo * body * (0.26 + 0.5 * ph) + crest) * (1.0 - 0.1 * fk);
-        float3 c = voicePal(fk + u * 0.7 + fl * (0.35 + 0.12 * fk));
+        float crest = exp(-abs(above) / 2.5);
+        // Нормаль поверхности на экране (y вниз) и блик от света стекла.
+        float slope = -(surf2 - surf) * h / (1.5 * S);
+        float2 n = normalize(float2(slope, -1.0));
+        float glint = pow(saturate(dot(n, L)), 6.0) * crest * (0.2 + 0.6 * energy);
+        float I = (halo * body * (0.24 + 0.46 * ph) + crest * (0.08 + 0.16 * ph + 0.3 * energy)) * (1.0 - 0.1 * fk);
+        float3 c = voicePal(fk + 0.4 * energy + fl * 0.15 + u * 0.3);
         c = lerp(lerp(c, 1.0, 0.3), c, saturate(ph * 1.4));
-        acc = over(voiceLight(c, saturate(I) * uVoice.x * cover, tone), acc);
+        c = lerp(c, 1.0, saturate(glint));
+        acc = over(voiceLight(c, saturate(I + 0.6 * glint) * uVoice.x * cover, tone), acc);
     }
+    // Где соседние пласты сходятся, свет между ними сгущается.
+    float meet = 0.0;
+    [unroll] for (int j = 0; j < 2; j++) {
+        float gap = abs(surfs[j] - surfs[j + 1]) * h / S;
+        float mid = 0.5 * (surfs[j] + surfs[j + 1]);
+        meet += exp(-gap / 2.0) * exp(-abs(depth - mid) * h / (2.5 * S));
+    }
+    float3 mc = lerp(voicePal(1.0 + fl * 0.15), 1.0, 0.45);
+    acc = over(voiceLight(mc, saturate(meet * (0.3 + 0.4 * ph)) * uVoice.x * cover, tone), acc);
     return acc;
 }
 

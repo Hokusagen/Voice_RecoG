@@ -48,6 +48,7 @@ from ui.gpu import Gpu
 from ui.lens_shader import HLSL
 from ui.live import _GdiGrabber
 from ui.motion import Spring, clamp01, ease_in_out, ease_out_cubic, smooth
+from ui.tide import LAYERS, NODES, Tide
 
 # ---------- макет, px при 100% ----------
 
@@ -147,7 +148,8 @@ class _Params(Structure):
     _fields_ = [(name, c_float * 4) for name in (
         "view", "pill", "glass", "light", "status", "tone", "label", "label_fx", "icon", "icon_fx",
         "icon_dark", "icon_light", "title_dark", "title_light", "detail_dark", "detail_light",
-        "morph", "morph_n", "voice")]
+        "morph", "morph_n", "voice")] + [
+        ("wave_h", c_float * (LAYERS * NODES)), ("wave_v", c_float * (LAYERS * NODES))]
 
 
 # ---------- движение ----------
@@ -186,6 +188,7 @@ class _Motion:
         self.syllable = 0.0
         self.phrase = 0.0
         self.flow = 0.0
+        self.tide = Tide()
 
     def voice(self, dt: float, level: float, listening: bool) -> tuple[float, float, float, float]:
         """Огибающие голоса: (видимость, фраза, слог, накопленная фаза течения)."""
@@ -373,6 +376,12 @@ class _Motion:
         on, phrase, syllable, flow = self.voice(dt, level, shown and tgt.stage is Stage.LISTENING)
         # Голос проступает вместе со стеклом и тает раньше него.
         p.voice[:] = (on * smooth(0.8, 0.97, mc), phrase, syllable, flow)
+        if on > 0.001:
+            self.tide.step(dt, phrase, syllable)
+            ctypes.memmove(p.wave_h, self.tide.heights().ctypes.data, LAYERS * NODES * 4)
+            ctypes.memmove(p.wave_v, self.tide.speeds().ctypes.data, LAYERS * NODES * 4)
+        else:
+            self.tide.reset()
 
         vanished = not shown and mc < 0.003 and self.label_opacity < 0.003
         return geometry, vanished
