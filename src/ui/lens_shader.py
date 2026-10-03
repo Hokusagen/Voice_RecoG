@@ -184,56 +184,54 @@ float waveAt(int layer, float u, out float speed) {
     return lerp(waveNode(base + i0), waveNode(base + i1), f);
 }
 
-// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три пласта света — синий,
-// фиолетовый, розовый. Уровень пластов ведёт фраза, форму — связанные волны:
-// толчок слога бежит по верхнему пласту, отражается от торцов и с запаздыванием
-// уходит в нижние. Где пласты сходятся, свет между ними сгущается; скаты,
-// обращённые к свету стекла, ловят блик — свет внутри стекла, а не градиент поверх.
+// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три ленты света — синяя,
+// фиолетовая, розовая. Формы независимы и неровны: у каждой своя струна голоса
+// (ui.tide), своя шумовая поверхность, своя толщина и волокна. Связь между ними —
+// светом и цветом: над тёмным фоном свет лент складывается, и где они
+// пересекаются, оттенки смешиваются и уходят к белому; над светлым ленты — цветные
+// фильтры, и в пересечениях цвета перемножаются в густые смешанные тона.
+// Уровень и плотность ведёт фраза: в паузе ленты оседают тонкими и бледными.
 float4 voiceTide(float2 p, float S, float cover, float tone) {
     float ph = uVoice.y, fl = uVoice.w;
+    float t = uView.z;
     float w = uPill.z, h = uPill.w;
     float u = (p.x - (uPill.x - 0.5 * w)) / max(w, 1.0);
     float depth = (uPill.y + 0.5 * h - p.y) / h;
-    float du = 1.5 * S / max(w, 1.0);
-    float2 L = uLight.xy;
-    float4 acc = 0.0;
-    float surfs[3];
+    float px = h / S;
+    float3 light = 0.0;
+    float3 trans = 1.0;
     [unroll] for (int k = 0; k < 3; k++) {
         float fk = (float)k;
-        float sp, sp2;
+        float sp;
         float d = waveAt(k, u, sp);
-        float d2 = waveAt(k, u + du, sp2);
-        float level = 0.08 + (0.40 - 0.10 * fk) * ph;
-        float lift = 0.24 * (0.5 + 0.5 * ph);
-        float surf = level + lift * tanh(d);
-        float surf2 = level + lift * tanh(d2);
-        surfs[k] = surf;
-        float above = (depth - surf) * h / S;
-        float energy = saturate(abs(sp) * 0.35);
-        // Пласт — залитая полоса: ярче под гребнем, тускнеет ко дну, над гребнем ореол.
-        float halo = exp(-max(above, 0.0) / (3.0 + 3.0 * ph));
-        float body = above < 0.0 ? lerp(0.45, 1.0, exp(above / (6.0 + 8.0 * ph))) : 1.0;
-        float crest = exp(-abs(above) / 2.5);
-        // Нормаль поверхности на экране (y вниз) и блик от света стекла.
-        float slope = -(surf2 - surf) * h / (1.5 * S);
-        float2 n = normalize(float2(slope, -1.0));
-        float glint = pow(saturate(dot(n, L)), 6.0) * crest * (0.2 + 0.6 * energy);
-        float I = (halo * body * (0.24 + 0.46 * ph) + crest * (0.08 + 0.16 * ph + 0.3 * energy)) * (1.0 - 0.1 * fk);
-        float3 c = voicePal(fk + 0.4 * energy + fl * 0.15 + u * 0.3);
-        c = lerp(lerp(c, 1.0, 0.3), c, saturate(ph * 1.4));
-        c = lerp(c, 1.0, saturate(glint));
-        acc = over(voiceLight(c, saturate(I + 0.6 * glint) * uVoice.x * cover, tone), acc);
+        float energy = saturate(abs(sp) * 0.3);
+        float dir = k == 1 ? -1.0 : 1.0;
+        // Неровная поверхность: шум вдоль канала, у каждой ленты свой масштаб и дрейф.
+        float n = fbm(float2(u * (3.0 + 2.5 * fk) + dir * t * (0.12 + 0.1 * fk + 0.25 * ph), fk * 7.3 + t * 0.05)) - 0.5;
+        float level = 0.12 + 0.05 * fk + (0.30 - 0.05 * fk) * ph;
+        float surf = level + (0.12 + 0.16 * ph) * 1.8 * n + 0.22 * (0.5 + 0.5 * ph) * tanh(d);
+        // Лента, а не заливка до дна: толщина гуляет вдоль канала.
+        float th = (0.08 + 0.16 * ph) * (0.5 + fbm(float2(u * 5.0 - dir * t * 0.2, fk * 3.1 + 11.0)));
+        float dist = (abs(depth - (surf - 0.5 * th)) - 0.5 * th) * px;
+        float D = 1.0 - smoothstep(-2.0, 2.5 + 2.0 * ph, dist);
+        // Верхний край ленты подсвечен; внутри — волокна, как у шёлка.
+        float edge = exp(-abs((depth - surf) * px) / 1.8);
+        float fib = 0.65 + 0.35 * fbm(float2(u * 34.0 + dir * t * 0.6, depth * 9.0 + fk * 5.0));
+        D = saturate(D * fib * (0.35 + 0.55 * ph + 0.25 * energy) + edge * (0.12 + 0.3 * energy + 0.2 * ph));
+        float3 C = voicePal(fk + 0.6 * n + fl * 0.2 + u * 0.4);
+        light += C * D;
+        trans *= 1.0 - D * (1.0 - C) * 0.85;
     }
-    // Где соседние пласты сходятся, свет между ними сгущается.
-    float meet = 0.0;
-    [unroll] for (int j = 0; j < 2; j++) {
-        float gap = abs(surfs[j] - surfs[j + 1]) * h / S;
-        float mid = 0.5 * (surfs[j] + surfs[j + 1]);
-        meet += exp(-gap / 2.0) * exp(-abs(depth - mid) * h / (2.5 * S));
-    }
-    float3 mc = lerp(voicePal(1.0 + fl * 0.15), 1.0, 0.45);
-    acc = over(voiceLight(mc, saturate(meet * (0.3 + 0.4 * ph)) * uVoice.x * cover, tone), acc);
-    return acc;
+    float on = uVoice.x * cover;
+    // Тёмный фон: свет складывается и насыщается к белому там, где ленты сходятся.
+    // rgb больше альфы в предумноженном слое — это сложение поверх живой середины.
+    float3 lit = 1.0 - exp(-light * 1.3);
+    float4 darkLayer = float4(lit, 0.35 * max(lit.r, max(lit.g, lit.b)));
+    // Светлый фон: умножение на пропускание лент, выраженное как «поверх белого».
+    float a = saturate(1.0 - min(trans.r, min(trans.g, trans.b)));
+    float3 c = a > 1e-3 ? saturate((trans - (1.0 - a)) / a) : 0.0;
+    float4 lightLayer = float4(c * a, a);
+    return lerp(darkLayer, lightLayer, tone) * on;
 }
 
 // ---------- значки: расстояния в долях рамки значка ----------
