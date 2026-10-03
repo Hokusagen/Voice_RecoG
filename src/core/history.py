@@ -6,7 +6,6 @@ import json
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 from config import app_data_dir
 
@@ -48,10 +47,6 @@ class History:
         if not text.strip():
             return
         self._items.appendleft(Entry(text=text, at=time.time()))
-        self._save()
-
-    def clear(self) -> None:
-        self._items.clear()
         self._save()
 
     def _save(self) -> None:

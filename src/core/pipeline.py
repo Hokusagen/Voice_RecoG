@@ -98,7 +98,6 @@ class Pipeline(QObject):
 
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
-        self._busy = threading.Event()
 
     # ---------- жизненный цикл ----------
 
@@ -118,14 +117,6 @@ class Pipeline(QObject):
         """Отдать видеокарту или забрать обратно; выполнится между фразами."""
         self._queue.put(_ReleaseGpu(released))
 
-    @property
-    def gpu_released(self) -> bool:
-        return self._release_gpu
-
-    @property
-    def is_busy(self) -> bool:
-        return self._busy.is_set()
-
     # ---------- рабочий поток ----------
 
     def _run(self) -> None:
@@ -135,7 +126,6 @@ class Pipeline(QObject):
             item = self._queue.get()
             if isinstance(item, _Shutdown):
                 return
-            self._busy.set()
             try:
                 if isinstance(item, _ReleaseGpu):
                     self._switch_gpu(item.released)
@@ -145,8 +135,6 @@ class Pipeline(QObject):
                 print(f"[pipeline] непредвиденный сбой: {exc}")
                 self._emit(Stage.ERROR, "Сбой обработки", str(exc))
                 self._sounds.play("error")
-            finally:
-                self._busy.clear()
 
     def _load_models(self) -> bool:
         detail = (

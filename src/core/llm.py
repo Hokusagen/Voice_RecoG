@@ -135,10 +135,6 @@ class OllamaClient:
             return f"короче {self.cfg.min_words} слов"
         return ""
 
-    def should_skip(self, raw_text: str) -> bool:
-        """Короткие реплики не стоят похода в модель."""
-        return bool(self.skip_reason(raw_text))
-
     def polish(self, raw_text: str, style: str = "careful") -> Polished:
         """Возвращает правку с таймингами. Бросает LLMUnavailable при сбое.
 

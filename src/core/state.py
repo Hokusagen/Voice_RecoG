@@ -40,9 +40,6 @@ class Stage(Enum):
     """Горячие клавиши отключены из трея."""
 
 
-#: Стадии, на которых конвейер занят и новую запись начинать нельзя.
-BUSY_STAGES = frozenset({Stage.TRANSCRIBING, Stage.POLISHING})
-
 #: Стадии, после которых HUD сам уезжает через таймаут.
 TRANSIENT_STAGES = frozenset(
     {Stage.DONE, Stage.WARNING, Stage.ERROR, Stage.CANCELLED, Stage.PAUSED}

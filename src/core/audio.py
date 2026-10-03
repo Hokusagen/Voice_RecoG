@@ -94,10 +94,6 @@ class AudioRecorder:
         self.close()
         return True
 
-    @property
-    def is_open(self) -> bool:
-        return self._stream is not None
-
     # ---------- аудио-колбэк ----------
 
     def _on_block(self, indata, frames, time_info, status) -> None:
@@ -159,18 +155,9 @@ class AudioRecorder:
     # ---------- телеметрия для UI ----------
 
     @property
-    def is_capturing(self) -> bool:
-        return self._capturing
-
-    @property
     def level(self) -> float:
         """Мгновенный RMS последнего блока, 0..~1."""
         return self._level
-
-    @property
-    def peak(self) -> float:
-        """Максимальный RMS за текущую запись — по нему судим о тишине."""
-        return self._peak
 
     @property
     def elapsed(self) -> float:

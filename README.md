@@ -323,30 +323,40 @@ Releases с заметками из `CHANGELOG.md`. Проверка импор�
 
 ```
 src/
-  main.py          точка входа: единственный экземпляр, QApplication, трей
-  demo.py          прогон всех состояний без микрофона и моделей
-  config.py        настройки и config.json
-  controller.py    связывает клавиши, запись, конвейер и интерфейс
+  main.py             точка входа: единственный экземпляр, QApplication, трей
+  demo.py             прогон всех состояний без микрофона и моделей
+  config.py           настройки и config.json
+  controller.py       связывает клавиши, запись, конвейер и интерфейс
+  journal_report.py   сводка по журналу диктовок
   core/
-    cuda_paths.py  регистрация CUDA-DLL до импорта ctranslate2
-    audio.py       микрофон, кольцевой пре-ролл, уровень сигнала
-    stt.py         faster-whisper с откатом на процессор
-    llm.py         Ollama: прогрев, keep_alive, разбор ответа
-    paster.py      вставка с сохранением буфера обмена
-    hotkeys.py     низкоуровневый хук клавиатуры
-    pipeline.py    фоновая очередь: звук -> текст -> правка -> вставка
-    sounds.py      синтез сигналов в памяти
-    history.py     последние диктовки
-    autostart.py   автозапуск через реестр
+    cuda_paths.py     регистрация CUDA-DLL до импорта ctranslate2
+    logging_setup.py  вывод в voicetyper.log, падения в crash.log
+    state.py          стадии и снимок состояния для HUD и трея
+    audio.py          микрофон, кольцевой пре-ролл, уровень сигнала
+    stt.py            faster-whisper с откатом на процессор
+    llm.py            Ollama: прогрев, keep_alive, разбор ответа
+    cloud.py          облако: правка и распознавание, лимиты, запасной сервер
+    paster.py         вставка с сохранением буфера обмена (Windows и macOS)
+    hotkeys.py        глобальные клавиши: keyboard на Windows, pynput на macOS
+    pipeline.py       фоновая очередь: звук -> текст -> правка -> вставка
+    journal.py        журнал диктовок dictations.jsonl
+    corrections.py    «Запомнить правку»: выделенное -> различия в журнал
+    sounds.py         синтез сигналов в памяти
+    history.py        последние диктовки
+    autostart.py      автозапуск: реестр на Windows, LaunchAgent на macOS
   ui/
-    hud.py         экранная плашка
-    liquid.py      стекло: преломление кромки, блик, дисперсия
-    glass.py       снятие фона под плашкой
-    indicators.py  свечение по контуру и значки состояний
-    shadow.py      размытая тень
-    tray.py        иконка и меню в трее
-    theme.py       материалы, палитра, метрики, шрифты
-assets/fonts/      Inter, Onest, Golos Text, Manrope
+    hud.py            экранная плашка
+    liquid.py         стекло: преломление кромки, блик, дисперсия
+    glass.py          снятие фона под плашкой
+    live.py           живое стекло: захват экрана в фоновом потоке (Windows)
+    indicators.py     свечение по контуру и значки состояний
+    shadow.py         размытая тень
+    tray.py           иконка и меню в трее
+    theme.py          материалы, палитра, метрики, шрифты
+assets/fonts/         Inter, Onest, Golos Text, Manrope
+build.py              сборка одной командой, VoiceTyper.spec — её рецепт
+shortcut.py           иконка и ярлык на исходники
+design/               Дарви и лаборатория стекла плашки (в приложение не входит)
 ```
 
 Обработка идёт в отдельном потоке с очередью: пока распознаётся одна фраза,
