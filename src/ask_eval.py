@@ -300,6 +300,10 @@ def cmd_report() -> int:
         print("Набора вопросов нет: сначала python src/ask_eval.py questions")
         return 1
     latest, first_run = collect(read_questions())
+    # Кандидат, убранный из candidates.json, уходит и со страницы: прогоны
+    # остаются на диске, но оценивать его больше незачем.
+    candidates = load_candidates()
+    latest = {key: row for key, row in latest.items() if key[2] in candidates}
     if not latest:
         print("Ни один прогон не совпадает с нынешним набором вопросов: python src/ask_eval.py run")
         return 1
@@ -329,7 +333,7 @@ def cmd_report() -> int:
     # Бесплатный запас — третья ось выбора рядом с качеством и скоростью. Его
     # не померить прогоном: он из условий тарифа и пишется в candidates.json
     # полем free.
-    free = {name: spec.get("free", "") for name, spec in load_candidates().items()}
+    free = {name: spec.get("free", "") for name, spec in candidates.items()}
     data = {"run": first_run, "items": ordered, "free": free}
     page = ROOT / f"report-{first_run}.html"
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
