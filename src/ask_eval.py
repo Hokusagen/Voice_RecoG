@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from config import AskConfig, Config, app_data_dir
-from core.ask import Asker, AskFailed
+from core.ask import Asker, AskFailed, Turn
 from core.cloud import CloudClient
 
 ROOT = app_data_dir() / "ask_eval"
@@ -151,19 +151,29 @@ def make_asker(cfg: Config, spec: dict) -> Asker:
 #: «…сброс через 7 с» в тексте отказа по лимиту.
 _RESET = re.compile(r"сброс через (\d+)")
 
+#: Отказы, которые проходят сами: минутный лимит, перегрузка, тишина в ответ.
+_PASSING = ("лимит", "ответило 503", "ответило 500", "вовремя", "оборвало")
+
 
 def ask_patiently(asker: Asker, question: str, conversation) -> dict:
-    """Один вопрос с ожиданием лимита: замер не должен мерить очередь отказов."""
+    """Один вопрос с ожиданием отказов, которые проходят сами.
+
+    Замер не должен мерить очередь отказов. Исключение — кончившаяся квота на
+    сутки: ждать её минутами бесполезно, а каждая попытка её же и тратит, —
+    тогда кандидат выбывает из прогона до следующего запуска.
+    """
     for attempt in range(5):
         try:
             answer = asker.ask(question, conversation)
         except AskFailed as exc:
             message = str(exc)
-            if "лимит" not in message or attempt == 4:
+            if "квота" in message:
+                return {"error": message, "spent": True}
+            if not any(mark in message for mark in _PASSING) or attempt == 4:
                 return {"error": message}
             match = _RESET.search(message)
-            wait = int(match.group(1)) + 2 if match else 20
-            print(f"    лимит, жду {wait} с")
+            wait = int(match.group(1)) + 2 if match else 15 * (attempt + 1)
+            print(f"    {message}; жду {wait} с")
             time.sleep(wait)
             continue
         return {
@@ -176,6 +186,35 @@ def ask_patiently(asker: Asker, question: str, conversation) -> dict:
             "truncated": answer.truncated,
         }
     return {"error": "не дождался лимита"}
+
+
+def collect(chains: list[list[str]]) -> tuple[dict[tuple[int, int, str], dict], str]:
+    """Ответы всех прогонов по нынешнему набору: (разговор, ход, кандидат) -> строка.
+
+    Удачный ответ побеждает отказ, свежий — старый: повторный прогон затем и
+    нужен, чтобы закрыть дыры, а не чтобы отказ затёр готовый ответ. Второе —
+    имя первого прогона: ключ оценок в браузере.
+    """
+    wanted = {
+        (number, turn): question
+        for number, chain in enumerate(chains, 1)
+        for turn, question in enumerate(chain, 1)
+    }
+    rows: dict[tuple[int, int, str], dict] = {}
+    first_run = ""
+    for run in sorted(RUNS.glob("*.jsonl")) if RUNS.exists() else []:
+        for line in run.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            # Прогон по прежней редакции набора сюда не попадает.
+            if wanted.get((row["chain"], row["turn"])) != row["question"]:
+                continue
+            key = (row["chain"], row["turn"], row["candidate"])
+            if "answer" in row or "answer" not in rows.get(key, {}):
+                rows[key] = row
+            first_run = first_run or run.stem
+    return rows, first_run
 
 
 def cmd_run(names: list[str]) -> int:
@@ -200,27 +239,50 @@ def cmd_run(names: list[str]) -> int:
         return 1
     askers = {name: make_asker(cfg, spec) for name, spec in chosen.items()}
     chains = read_questions()
+    # Спрашиваем только то, на что ответа ещё нет: у Gemini бесплатно двадцать
+    # запросов в сутки, и повторять готовое значило бы недобрать новое.
+    done, _ = collect(chains)
+    spent: set[str] = set()
 
     RUNS.mkdir(parents=True, exist_ok=True)
     out = RUNS / (time.strftime("%Y%m%d-%H%M") + ".jsonl")
     print(f"{len(chains)} разговоров × {len(chosen)} кандидатов → {out.name}")
+    asked = 0
     with out.open("w", encoding="utf-8") as handle:
         # Кандидаты по очереди внутри разговора, а не весь набор подряд:
         # лимиты у Groq на модель, и так они тратятся равномерно.
         for number, chain in enumerate(chains, 1):
             print(f"[{number}/{len(chains)}] {chain[0][:70]}")
             for name, asker in askers.items():
+                if name in spent:
+                    continue
                 # Каждый разговор — с чистого листа, как после закрытой карточки.
                 asker.close()
                 conversation = asker.conversation()
                 for turn, question in enumerate(chain, 1):
+                    if len(conversation.turns) < turn - 1:
+                        break  # прошлый ход остался без ответа — уточнять нечего
+                    have = done.get((number, turn, name))
+                    if have is not None and "answer" in have:
+                        # Готовый ответ — в историю разговора, как будто его
+                        # только что дали: уточнение должно видеть именно его.
+                        conversation.turns.append(Turn(question, have["answer"]))
+                        continue
                     row = {"candidate": name, "chain": number, "turn": turn, "question": question}
                     row.update(ask_patiently(asker, question, conversation))
+                    asked += 1
+                    if row.pop("spent", False):
+                        spent.add(name)
+                        print(f"    {name}: {row['error']} — до следующего запуска")
+                        break
                     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
                     handle.flush()
                     took = f"{row['took_s']:.1f} с" if "took_s" in row else row["error"]
                     print(f"    {name}: {took}")
-    print("Готово. Страница для оценки: python src/ask_eval.py report")
+    if out.stat().st_size == 0:
+        out.unlink(missing_ok=True)
+        print("Новых ответов нет." if asked else "Все ответы уже есть.")
+    print("Страница для оценки: python src/ask_eval.py report")
     return 0
 
 
@@ -232,30 +294,12 @@ def cmd_report() -> int:
 
     Новый кандидат прогоняется один и ложится на ту же страницу к уже
     оценённым — оценки в браузере привязаны к вопросу и кандидату, а не к
-    прогону, и переоценивать старых не нужно. Из повторного прогона того же
-    кандидата берётся последний ответ.
+    прогону, и переоценивать старых не нужно.
     """
-    runs = sorted(RUNS.glob("*.jsonl")) if RUNS.exists() else []
-    if not runs or not QUESTIONS.exists():
-        print("Прогонов нет: python src/ask_eval.py run")
+    if not QUESTIONS.exists():
+        print("Набора вопросов нет: сначала python src/ask_eval.py questions")
         return 1
-    wanted = {
-        (number, turn): question
-        for number, chain in enumerate(read_questions(), 1)
-        for turn, question in enumerate(chain, 1)
-    }
-    latest: dict[tuple[int, int, str], dict] = {}
-    first_run = ""
-    for run in runs:
-        for line in run.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            # Прогон по прежней редакции набора на эту страницу не попадает.
-            if wanted.get((row["chain"], row["turn"])) != row["question"]:
-                continue
-            latest[(row["chain"], row["turn"], row["candidate"])] = row
-            first_run = first_run or run.stem
+    latest, first_run = collect(read_questions())
     if not latest:
         print("Ни один прогон не совпадает с нынешним набором вопросов: python src/ask_eval.py run")
         return 1

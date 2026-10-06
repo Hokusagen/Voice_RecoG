@@ -672,8 +672,10 @@ def _describe(exc: Exception) -> str:
 
 
 #: «...on output tokens per minute (OTPM): Limit 1000, Requested 1582» —
-#: название лимита из тела отказа.
-_LIMIT_NAME = re.compile(r" on ([^:]+):")
+#: название лимита из тела отказа. «Limit» обязателен: у Gemini в тексте
+#: отказа есть «more information on this error, head to:», и без него
+#: квота тарифа читалась как лимит с названием «this error, head to».
+_LIMIT_NAME = re.compile(r" on ([^:]+): Limit")
 
 
 def _http_error(response: requests.Response) -> str:
@@ -681,8 +683,12 @@ def _http_error(response: requests.Response) -> str:
     if code == 401:
         return "облако не приняло ключ"
     try:
-        message = response.json()["error"]["message"] or ""
-    except (ValueError, KeyError, TypeError):
+        body = response.json()
+        # Gemini в режиме совместимости кладёт ошибку в список из одного элемента.
+        if isinstance(body, list) and body:
+            body = body[0]
+        message = body["error"]["message"] or ""
+    except (ValueError, KeyError, TypeError, IndexError):
         message = ""
     if code == 403:
         # Groq закрывает доступ целым диапазонам адресов, и в теле ответа это
@@ -693,9 +699,14 @@ def _http_error(response: requests.Response) -> str:
         # Какой лимит упёрся, пишут только в теле: в заголовках у Groq запросы
         # и токены в минуту, а отбить запрос может и то, чего там нет.
         name = _LIMIT_NAME.search(message)
+        detail = name.group(1).strip() if name else ""
+        if not detail and "quota" in message.lower():
+            # Так отказывает Gemini, когда кончились бесплатные запросы на сутки:
+            # ждать минуту тут бесполезно, и это должно быть видно из текста.
+            detail = "квота тарифа"
         return (
             "облако: исчерпан лимит"
-            + (f" — {name.group(1).strip()}" if name else "")
+            + (f" — {detail}" if detail else "")
             + (f", сброс через {retry:.0f} с" if retry else "")
         )
     return f"облако ответило {code}" + (f": {message[:80]}" if message else "")
