@@ -523,7 +523,13 @@ class CloudClient:
         answer.text = answer.text.strip()
         answer.took_s = time.monotonic() - started
         if not answer.text:
-            self.last_error = "облако ответило пустым текстом"
+            # Пустой ответ с обрывом — это не сбой облака: рассуждающая модель
+            # на трудном вопросе может извести весь max_tokens на раздумья
+            # (gpt-oss · high, 2998 из 3000, 6.10.2026).
+            self.last_error = (
+                "модель потратила весь потолок ответа на раздумья"
+                if answer.truncated else "облако ответило пустым текстом"
+            )
             raise AskFailed(self.last_error)
         self.last_error = None
         return answer
