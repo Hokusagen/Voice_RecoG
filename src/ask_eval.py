@@ -190,6 +190,14 @@ def cmd_run(names: list[str]) -> int:
         print("Есть: " + ", ".join(candidates))
         return 1
     chosen = {name: candidates[name] for name in (names or candidates)}
+    # Свой сервер без ключа пропускаем: иначе вопрос ушёл бы на серверы
+    # правки с чужим именем модели и записался бы в прогон отказом.
+    keyless = [name for name, spec in chosen.items() if spec.get("url") and not spec.get("api_key", "").strip()]
+    for name in keyless:
+        print(f"Пропускаю «{name}»: нет api_key")
+        del chosen[name]
+    if not chosen:
+        return 1
     askers = {name: make_asker(cfg, spec) for name, spec in chosen.items()}
     chains = read_questions()
 
