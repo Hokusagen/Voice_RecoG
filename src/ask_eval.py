@@ -2,7 +2,7 @@
 
     questions   собрать набор вопросов из журнала диктовок, если его ещё нет
     run [имя…]  прогнать набор через кандидатов из candidates.json — всех или названных
-    report      страница для слепой оценки последнего прогона, откроется в браузере
+    report      страница для слепой оценки всех прогонов по набору, откроется в браузере
 
 Зачем вслепую. Модель выбирают по впечатлению от ответов, а впечатление легко
 подкрутить знанием, кто отвечал: «это же 120b, значит, лучше». На странице
@@ -220,15 +220,40 @@ def cmd_run(names: list[str]) -> int:
 
 
 def cmd_report() -> int:
+    """Одна страница на набор вопросов: ответы всех прогонов по нему.
+
+    Новый кандидат прогоняется один и ложится на ту же страницу к уже
+    оценённым — оценки в браузере привязаны к вопросу и кандидату, а не к
+    прогону, и переоценивать старых не нужно. Из повторного прогона того же
+    кандидата берётся последний ответ.
+    """
     runs = sorted(RUNS.glob("*.jsonl")) if RUNS.exists() else []
-    if not runs:
+    if not runs or not QUESTIONS.exists():
         print("Прогонов нет: python src/ask_eval.py run")
         return 1
-    run = runs[-1]
-    rows = [json.loads(line) for line in run.read_text(encoding="utf-8").splitlines() if line.strip()]
+    wanted = {
+        (number, turn): question
+        for number, chain in enumerate(read_questions(), 1)
+        for turn, question in enumerate(chain, 1)
+    }
+    latest: dict[tuple[int, int, str], dict] = {}
+    first_run = ""
+    for run in runs:
+        for line in run.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            # Прогон по прежней редакции набора на эту страницу не попадает.
+            if wanted.get((row["chain"], row["turn"])) != row["question"]:
+                continue
+            latest[(row["chain"], row["turn"], row["candidate"])] = row
+            first_run = first_run or run.stem
+    if not latest:
+        print("Ни один прогон не совпадает с нынешним набором вопросов: python src/ask_eval.py run")
+        return 1
 
     items: dict[tuple[int, int], dict] = {}
-    for row in rows:
+    for row in latest.values():
         key = (row["chain"], row["turn"])
         item = items.setdefault(key, {"chain": row["chain"], "turn": row["turn"], "question": row["question"], "answers": []})
         item["answers"].append(row)
@@ -240,15 +265,17 @@ def cmd_report() -> int:
         item["before"] = list(history.get(item["chain"], []))
         history.setdefault(item["chain"], []).append(item["question"])
         # Порядок ответов свой у каждого вопроса, но один и тот же при
-        # пересборке страницы: иначе оценки в браузере съехали бы на чужие буквы.
-        random.Random(f"{run.stem}/{key}").shuffle(item["answers"])
+        # пересборке страницы с теми же кандидатами.
+        random.Random(f"{first_run}/{key}").shuffle(item["answers"])
         for letter, answer in zip("АБВГДЕЖЗИКЛМН", item["answers"]):
             answer["letter"] = letter
             answer["id"] = f"{key[0]}.{key[1]}.{answer['candidate']}"
         ordered.append(item)
 
-    data = {"run": run.stem, "items": ordered}
-    page = ROOT / f"report-{run.stem}.html"
+    # Имя первого прогона — ключ оценок в браузере: с ним страница, дополненная
+    # новым кандидатом, видит оценки, поставленные до этого.
+    data = {"run": first_run, "items": ordered}
+    page = ROOT / f"report-{first_run}.html"
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     page.write_text(_PAGE.replace("/*DATA*/null", payload), encoding="utf-8")
     print(f"Страница: {page}")
