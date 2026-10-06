@@ -19,17 +19,18 @@ Groq закрывает доступ целым диапазонам адрес�
 
 from __future__ import annotations
 
-import io
+import json
 import re
 import time
-import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import requests
 
-from config import CloudConfig, LLMConfig
+from config import AskConfig, CloudConfig, LLMConfig
+from core.ask import Answer, AskFailed
+from core.audio import to_wav
 from core.llm import LLMUnavailable, Polished, _looks_sane, _sanitize
 
 
@@ -137,6 +138,10 @@ class _Server:
     audio_quota: Quota = field(default_factory=Quota)
     """Лимиты распознавания (audio/transcriptions): у Groq они отдельные."""
 
+    ask_quota: Quota = field(default_factory=Quota)
+    """Лимиты модели вопросов: у Groq они свои у каждой модели, и остатки по
+    вопросам не должны выдавать себя за остатки правки."""
+
     output_log: list[tuple[float, int]] = field(default_factory=list)
     """Выходные токены последней минуты: OTPM сервер в заголовках не шлёт."""
 
@@ -160,18 +165,21 @@ class _Server:
         """Ключ вставлен — значит, этим сервером можно пользоваться."""
         return bool(self.api_key.strip())
 
-    def remember(self, response: requests.Response, audio: bool = False) -> None:
+    def remember(self, response: requests.Response, slot: str = "chat") -> None:
+        """slot — чьи это лимиты: chat (правка), audio или ask."""
         quota = parse_quota(response.headers)
         if not quota.known:
             return
-        if audio:
+        if slot == "audio":
             self.audio_quota = quota
+        elif slot == "ask":
+            self.ask_quota = quota
         else:
             self.quota = quota
 
 
 class CloudClient:
-    def __init__(self, cfg: CloudConfig, llm_cfg: LLMConfig) -> None:
+    def __init__(self, cfg: CloudConfig, llm_cfg: LLMConfig, ask_cfg: AskConfig | None = None) -> None:
         self.cfg = cfg
         self.llm_cfg = llm_cfg
         self._session = requests.Session()
@@ -191,6 +199,14 @@ class CloudClient:
 
         self._left_main_at = 0.0
         """Когда ушли с основного: через reserve.return_after_s пробуем его снова."""
+
+        self._ask_server: _Server | None = None
+        """Свой сервер для вопросов из ask.url: тогда вопросы не ходят на серверы
+        правки и не переезжают на запасной."""
+        if ask_cfg is not None and ask_cfg.url.strip() and ask_cfg.api_key.strip():
+            self._ask_server = _Server(
+                "облако вопросов", ask_cfg.url, ask_cfg.api_key, ask_cfg.model, "", 0,
+            )
 
     # ---------- кто отвечает ----------
 
@@ -246,8 +262,9 @@ class CloudClient:
         self,
         path: str,
         build: Callable[[_Server], dict],
-        audio: bool = False,
+        slot: str = "chat",
         on_limit: bool = False,
+        only: _Server | None = None,
     ) -> requests.Response:
         """Запрос активному серверу, а если он молчит — следующему.
 
@@ -258,11 +275,13 @@ class CloudClient:
         альтернатива хуже: Whisper на процессоре идёт в реальном времени.
 
         Тело запроса собирает build: у серверов разные модели и потолок ответа,
-        поэтому один раз заранее его не посчитать.
+        поэтому один раз заранее его не посчитать. only — спросить только этот
+        сервер, мимо цепочки основной–запасной.
         """
-        self._maybe_return()
+        if only is None:
+            self._maybe_return()
         trouble = "облако не настроено"
-        for server in self._chain():
+        for server in [only] if only is not None else self._chain():
             try:
                 response = self._session.post(
                     f"{server.base}/{path}",
@@ -273,9 +292,10 @@ class CloudClient:
             except requests.RequestException as exc:
                 trouble = _describe(exc)
             else:
-                server.remember(response, audio)
+                server.remember(response, slot)
                 if not _hopeless(response, on_limit):
-                    self._settle(server)
+                    if only is None:
+                        self._settle(server)
                     return response
                 trouble = _http_error(response)
             print(f"[cloud] {server.name} не отвечает: {trouble}")
@@ -351,6 +371,9 @@ class CloudClient:
         a = self.audio_quota
         if a.requests_left is not None:
             parts.append(f"{a.requests_now()} из {a.requests_limit} распознаваний")
+        q = (self._ask_server or self._active).ask_quota
+        if q.requests_left is not None:
+            parts.append(f"{q.requests_now()} из {q.requests_limit} вопросов")
         if not parts:
             # Запасной сервер лимиты в заголовках не шлёт, но то, что работает
             # он, а не основной, человеку важнее самих цифр: там платный тариф.
@@ -363,6 +386,11 @@ class CloudClient:
     def configured(self) -> bool:
         """Ключ вставлен — значит, пользователь осознанно включил облако."""
         return bool(self._servers)
+
+    @property
+    def can_ask(self) -> bool:
+        """Есть кому задать вопрос: свой сервер вопросов или серверы правки."""
+        return self._ask_server is not None or self.configured
 
     @property
     def label(self) -> str:
@@ -443,18 +471,68 @@ class CloudClient:
         self.last_error = None
         return polished
 
+    # ---------- вопросы ----------
+
+    def ask(
+        self,
+        messages: list[dict],
+        model: str,
+        effort: str,
+        max_tokens: int,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> Answer:
+        """Ответ на вопрос потоком: on_delta получает текст по мере генерации.
+
+        Поток нужен не ради эффекта: рассуждающая модель отвечает секундами, и
+        карточка должна заполняться, а не ждать конца. Раздумья модели (поле
+        reasoning у gpt-oss) не показываем, только считаем.
+        """
+
+        def build(server: _Server) -> dict:
+            payload: dict = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "stream": True,
+                # Без этого OpenAI-совместимые серверы не присылают расход
+                # токенов в потоке; Groq кладёт его ещё и в x_groq.
+                "stream_options": {"include_usage": True},
+            }
+            if effort:
+                payload["reasoning_effort"] = effort
+            return {"json": payload, "stream": True}
+
+        started = time.monotonic()
+        try:
+            response = self._request("chat/completions", build, slot="ask", only=self._ask_server)
+        except CloudDown as exc:
+            self.last_error = str(exc)
+            raise AskFailed(self.last_error) from exc
+
+        with response:
+            if response.status_code != 200:
+                self.last_error = _http_error(response)
+                raise AskFailed(self.last_error)
+            answer = Answer(text="", model=model, effort=effort)
+            try:
+                _read_stream(response, answer, started, on_delta)
+            except requests.RequestException as exc:
+                self.last_error = "облако оборвало ответ: " + _describe(exc)
+                raise AskFailed(self.last_error) from exc
+
+        answer.text = answer.text.strip()
+        answer.took_s = time.monotonic() - started
+        if not answer.text:
+            self.last_error = "облако ответило пустым текстом"
+            raise AskFailed(self.last_error)
+        self.last_error = None
+        return answer
+
     # ---------- распознавание ----------
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, language: str, prompt: str) -> str:
         """Whisper в облаке: тот же large-v3-turbo, но без видеокарты и за секунду."""
-        pcm = np.clip(audio, -1.0, 1.0)
-        buffer = io.BytesIO()
-        with wave.open(buffer, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(sample_rate)
-            wav.writeframes((pcm * 32767).astype("<i2").tobytes())
-        speech = buffer.getvalue()
+        speech = to_wav(audio, sample_rate)
 
         def build(server: _Server) -> dict:
             data = {
@@ -492,7 +570,7 @@ class CloudClient:
 
     def _transcription(self, build: Callable[[_Server], dict]) -> requests.Response:
         try:
-            return self._request("audio/transcriptions", build, audio=True, on_limit=True)
+            return self._request("audio/transcriptions", build, slot="audio", on_limit=True)
         except CloudDown as exc:
             self.last_error = str(exc)
             raise CloudUnavailable(self.last_error) from exc
@@ -513,6 +591,53 @@ class CloudLimited(LLMUnavailable):
         super().__init__(message)
         self.kind = kind
         self.reset_s = reset_s
+
+
+def _read_stream(
+    response: requests.Response,
+    answer: Answer,
+    started: float,
+    on_delta: Callable[[str], None] | None,
+) -> None:
+    """Разбирает поток server-sent events в answer.
+
+    Строки режем по байтам, а не по декодированному тексту: iter_lines с
+    decode_unicode делит строки ещё и по U+2028 и прочим разделителям из
+    юникода, и на первом же замере JSON посреди ответа порвался пополам.
+    """
+    for raw in response.iter_lines():
+        line = raw.decode("utf-8", "replace").strip()
+        # Пустые строки разделяют события, а «:» в начале — пинги-комментарии.
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        error = chunk.get("error")
+        if error:
+            message = error.get("message", "") if isinstance(error, dict) else str(error)
+            raise AskFailed(f"облако прервало ответ: {message[:80]}")
+        usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage")
+        if usage:
+            answer.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            answer.completion_tokens = int(usage.get("completion_tokens") or 0)
+            details = usage.get("completion_tokens_details") or {}
+            answer.reasoning_tokens = int(details.get("reasoning_tokens") or 0)
+        for choice in chunk.get("choices") or []:
+            if choice.get("finish_reason") == "length":
+                answer.truncated = True
+            piece = (choice.get("delta") or {}).get("content")
+            if not piece:
+                continue
+            if not answer.text:
+                answer.first_s = time.monotonic() - started
+            answer.text += piece
+            if on_delta is not None:
+                on_delta(piece)
 
 
 def _hopeless(response: requests.Response, on_limit: bool) -> bool:

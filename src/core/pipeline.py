@@ -19,9 +19,10 @@ from PySide6.QtCore import QObject, Signal
 from config import AudioConfig
 from core import journal
 from core import stt
+from core.ask import Asker, AskFailed
 from core.audio import loudness
 from core.cloud import CloudClient, CloudLimited, CloudUnavailable
-from core.journal import Attempt, Journal, Record
+from core.journal import AskRecord, Attempt, Journal, Record
 from core.llm import LLMUnavailable, OllamaClient, Polished
 from core.paster import ClipboardError, Paster, active_app
 from core.state import Stage, Status
@@ -35,6 +36,9 @@ class Job:
     """careful | dry — стиль правки; None — вставить сырой текст Whisper."""
 
     hotkey: str
+
+    ask: bool = False
+    """Вопрос Дарви: распознать и спросить модель, ничего не вставляя."""
 
 
 class _Shutdown:
@@ -71,6 +75,12 @@ class Pipeline(QObject):
     limited = Signal(str, float)
     """Облако упёрлось в лимит: вид («minute» или «day») и секунды до сброса."""
 
+    answer_delta = Signal(str)
+    """Очередной кусок ответа на вопрос, пока модель его пишет: для карточки."""
+
+    answered = Signal(str, str)
+    """Вопрос и полный ответ на него."""
+
     def __init__(
         self,
         whisper: WhisperEngine,
@@ -81,10 +91,12 @@ class Pipeline(QObject):
         journal_log: Journal | None = None,
         release_gpu: bool = False,
         cloud: CloudClient | None = None,
+        asker: Asker | None = None,
     ) -> None:
         super().__init__()
         self._release_gpu = release_gpu
         self._cloud = cloud
+        self._asker = asker
         self._lite = not stt.available()
         """Лёгкая сборка: локального Whisper нет, всё делает облако."""
 
@@ -250,6 +262,9 @@ class Pipeline(QObject):
     # ---------- обработка одной фразы ----------
 
     def _process(self, job: Job) -> None:
+        if job.ask:
+            self._process_ask(job)
+            return
         seconds = len(job.audio) / self._sample_rate
         started = time.monotonic()
         record = Record(audio_s=round(seconds, 2), hotkey=job.hotkey)
@@ -328,13 +343,88 @@ class Pipeline(QObject):
         else:
             self._emit(Stage.DONE, f"Готово за {took:.1f} с", text, inserted=True)
 
-    def _transcribe(self, audio: np.ndarray, record: Record) -> str:
-        """Whisper в облаке, если видеокарта отдана, иначе локальный."""
+    def _process_ask(self, job: Job) -> None:
+        """Вопрос Дарви: распознать, спросить модель, ответ — в журнал и сигналом."""
+        if self._asker is None:
+            self._emit(Stage.WARNING, "Спросить некого", "нужен ключ облака")
+            return
+        started = time.monotonic()
+        record = AskRecord(audio_s=round(len(job.audio) / self._sample_rate, 2), hotkey=job.hotkey)
+        record.rms = loudness(job.audio, self._sample_rate, self._audio.silence_rms).rms
+
+        conversation = self._asker.conversation()
+        record.conversation = conversation.id
+        record.turn = len(conversation.turns) + 1
+        record.stt_prompt = self._asker.whisper_hint(conversation) or self._whisper.cfg.initial_prompt
+        record.audio_file = self._asker.keep_audio(job.audio, self._sample_rate, record.id)
+
+        self._emit(Stage.TRANSCRIBING, "Распознаю", f"{record.audio_s:.1f} с записи")
+        heard = time.monotonic()
+        try:
+            question = self._transcribe(job.audio, record, record.stt_prompt)
+        except CloudUnavailable as exc:
+            record.error = str(exc)
+            self._close(record, started)
+            self._emit(Stage.ERROR, "Не распознал", str(exc))
+            self._sounds.play("error")
+            return
+        record.whisper_s = round(time.monotonic() - heard, 2)
+        record.question = question
+        if not question:
+            record.error = "Whisper ничего не разобрал"
+            self._close(record, started)
+            self._emit(Stage.WARNING, "Ничего не разобрал", "попробуйте сказать чётче")
+            self._sounds.play("error")
+            return
+        print(f"[ask] вопрос {record.turn} в разговоре {record.conversation}: «{question}»")
+        record.app = active_app()
+
+        self._emit(Stage.POLISHING, "Думаю", self._asker.cfg.model)
+        asked = time.monotonic()
+        try:
+            answer = self._asker.ask(question, conversation, self.answer_delta.emit)
+        except AskFailed as exc:
+            record.error = str(exc)
+            self._close(record, started)
+            self._emit(Stage.ERROR, "Не ответил", str(exc))
+            self._sounds.play("error")
+            return
+        finally:
+            if self._cloud is not None:
+                self.quota.emit(self._cloud.quota_line())
+
+        record.answer_s = round(time.monotonic() - asked, 2)
+        record.model, record.effort, record.answer = answer.model, answer.effort, answer.text
+        record.truncated = answer.truncated
+        record.first_s = round(answer.first_s, 2)
+        record.prompt_tokens = answer.prompt_tokens
+        record.completion_tokens = answer.completion_tokens
+        record.reasoning_tokens = answer.reasoning_tokens
+        self._close(record, started)
+        print(
+            f"[ask] ответ {answer.model} · {answer.effort or '-'} за {record.answer_s:.1f} с "
+            f"(первое слово {record.first_s:.1f} с, раздумья {answer.reasoning_tokens} ток.)"
+            + (" · ОБОРВАН по max_tokens" if answer.truncated else "")
+            + f":\n{answer.text}\n"
+        )
+        self.answered.emit(question, answer.text)
+        self._sounds.play("success")
+        # inserted: итог ушёл не на плашку — пока в журнал, потом в карточку, —
+        # поэтому плашка, как после диктовки, показывает одну галочку.
+        self._emit(Stage.DONE, "Ответил", inserted=True)
+
+    def _transcribe(self, audio: np.ndarray, record: Record | AskRecord, prompt: str | None = None) -> str:
+        """Whisper в облаке, если видеокарта отдана, иначе локальный.
+
+        prompt — своя подсказка вместо initial_prompt: у уточнения она из
+        прошлого ответа.
+        """
         if self._cloud_whisper:
             cfg = self._whisper.cfg
             try:
                 text = self._cloud.transcribe(
-                    audio, self._sample_rate, cfg.language, cfg.initial_prompt
+                    audio, self._sample_rate, cfg.language,
+                    cfg.initial_prompt if prompt is None else prompt,
                 )
                 record.stt = self._cloud.whisper_model
                 return text
@@ -349,7 +439,7 @@ class Pipeline(QObject):
             self._emit(Stage.LOADING, "Поднимаю Whisper", "облако не ответило")
             self._whisper.load(self._whisper_device())
         record.stt = f"{self._whisper.model_name} · {self._whisper.device}"
-        return self._whisper.transcribe(audio)
+        return self._whisper.transcribe(audio, prompt)
 
     def _polish(self, raw_text: str, style: str, verb: str, record: Record) -> Polished:
         """Правка облаком с откатом на Ollama — или сразу Ollama.
@@ -409,7 +499,7 @@ class Pipeline(QObject):
         self._emit(Stage.POLISHING, verb, self._cloud.model)
         return self._cloud.polish(raw_text, style)
 
-    def _close(self, record: Record, started: float) -> float:
+    def _close(self, record: Record | AskRecord, started: float) -> float:
         """Дописывает длительность и отправляет запись в журнал."""
         took = time.monotonic() - started
         record.total_s = round(took, 2)

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from config import CONFIG_PATH, Config, build_version
 from core import autostart
+from core.ask import Asker
 from core.audio import AudioError, AudioRecorder
 from core.cloud import CloudClient
 from core.corrections import Corrector, describe
@@ -40,7 +41,8 @@ class Controller(QObject):
         self.recorder = AudioRecorder(cfg.audio)
         self.whisper = WhisperEngine(cfg.whisper)
         self.llm = OllamaClient(cfg.llm)
-        self.cloud = CloudClient(cfg.cloud, cfg.llm)
+        self.cloud = CloudClient(cfg.cloud, cfg.llm, cfg.ask)
+        self.asker = Asker(cfg.ask, self.cloud) if self.cloud.can_ask else None
         self.paster = Paster(cfg.paste)
         self.sounds = SoundBoard(enabled=cfg.ui.sounds, volume=cfg.ui.volume)
         self.history = History(cfg.ui.history_size)
@@ -56,6 +58,7 @@ class Controller(QObject):
         self.pipeline = Pipeline(
             self.whisper, self.llm, self.paster, self.sounds, cfg.audio,
             journal_log=self.journal, release_gpu=cfg.release_gpu, cloud=self.cloud,
+            asker=self.asker,
         )
 
         self._action: str | None = None
@@ -192,6 +195,12 @@ class Controller(QObject):
         if not self._ready:
             self._show(Stage.WARNING, "Ещё загружаюсь", "модель не готова")
             return
+        if action == "ask" and self.asker is None:
+            # Сказать это до записи, а не после: иначе человек надиктует
+            # вопрос целиком и только потом узнает, что спросить некого.
+            self.sounds.play("error")
+            self._show(Stage.WARNING, "Спросить некого", "нужен ключ облака: cloud.api_key или ask.api_key")
+            return
 
         try:
             self.recorder.start_capture()
@@ -206,7 +215,9 @@ class Controller(QObject):
         if self.cfg.hotkeys.mode == "toggle":
             hint = f"нажмите {self.cfg.hotkeys.record.upper()} ещё раз"
         style = self._style_for(action)
-        if style == "dry":
+        if action == "ask":
+            hint = f"вопрос · {hint}"
+        elif style == "dry":
             hint = f"сухо · {hint}"
         elif style is None:
             hint = f"без правки · {hint}"
@@ -237,12 +248,17 @@ class Controller(QObject):
             return
 
         self.pipeline.submit(
-            Job(audio=audio, style=self._style_for(action), hotkey=getattr(self.cfg.hotkeys, action))
+            Job(
+                audio=audio,
+                style=self._style_for(action),
+                hotkey=getattr(self.cfg.hotkeys, action),
+                ask=action == "ask",
+            )
         )
 
     def _style_for(self, action: str) -> str | None:
         """Какой правкой заканчивается запись по этой клавише."""
-        if action == "record_raw":
+        if action in ("record_raw", "ask"):
             return None
         main = self.cfg.llm.style if self.cfg.llm.style in ("careful", "dry") else "careful"
         if action == "record":

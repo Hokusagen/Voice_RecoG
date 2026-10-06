@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import time
+import wave
 from collections import deque
 from dataclasses import dataclass
 
@@ -210,3 +212,15 @@ def loudness(audio: np.ndarray, sample_rate: int, silence_rms: float) -> Loudnes
         quiet = float(np.mean(frames < silence_rms))
 
     return Loudness(round(rms, 4), round(peak, 4), round(clipped, 4), round(quiet, 3))
+
+
+def to_wav(audio: np.ndarray, sample_rate: int) -> bytes:
+    """16-битный WAV: его принимает облачный Whisper и открывает любой плеер."""
+    pcm = np.clip(audio, -1.0, 1.0)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes((pcm * 32767).astype("<i2").tobytes())
+    return buffer.getvalue()

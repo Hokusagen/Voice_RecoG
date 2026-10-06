@@ -158,7 +158,8 @@ class WhisperEngine:
 
     # ---------- распознавание ----------
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, prompt: str | None = None) -> str:
+        """prompt — своя подсказка вместо initial_prompt из настроек."""
         if self._model is None:
             raise RuntimeError("модель Whisper ещё не загружена")
 
@@ -171,7 +172,7 @@ class WhisperEngine:
             # Без этого модель «зацикливается»: предыдущий текст утягивает
             # следующий сегмент в повтор той же фразы.
             condition_on_previous_text=False,
-            initial_prompt=self.cfg.initial_prompt or None,
+            initial_prompt=(self.cfg.initial_prompt if prompt is None else prompt) or None,
             temperature=0.0,
         )
         text = "".join(segment.text for segment in segments).strip()

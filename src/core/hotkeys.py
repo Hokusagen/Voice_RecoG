@@ -28,7 +28,7 @@ from config import HotkeysConfig
 
 #: Действия в порядке убывания специфичности: ctrl+f8 должен побеждать f8,
 #: иначе одно нажатие поднимет сразу оба.
-_ACTIONS = ("record_raw", "record_alt", "record")
+_ACTIONS = ("record_raw", "record_alt", "record", "ask")
 
 #: Действия-нажатия: срабатывают в момент нажатия и запись не держат.
 _TAPS = ("correct",)

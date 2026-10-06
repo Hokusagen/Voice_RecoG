@@ -187,6 +187,57 @@ class Correction:
     """Сколько прошло между вставкой и правкой."""
 
 
+@dataclass
+class AskRecord:
+    """Вопрос Дарви: что услышал Whisper, что ответила модель и за сколько.
+
+    Лежит в том же файле, что и диктовки, своим видом записи: так один журнал
+    отвечает и на вопрос «как часто ошибается распознавание», и на вопрос
+    «какая модель отвечает понятно». Ответ никуда не вставлялся.
+    """
+
+    id: str = field(default_factory=new_id)
+    kind: str = "ask"
+    at: str = field(default_factory=now)
+    version: str = field(default_factory=build_version)
+
+    conversation: str = ""
+    """Ключ разговора: уточнения ложатся с тем же ключом, что и первый вопрос."""
+
+    turn: int = 1
+    audio_s: float = 0.0
+    hotkey: str = ""
+    app: str = ""
+    """Окно, из которого спрашивали: по нему потом видно, о чём был вопрос."""
+
+    rms: float = 0.0
+    audio_file: str = ""
+    """Запись вопроса в каталоге asks, если её храним (ask.keep_audio)."""
+
+    whisper_s: float = 0.0
+    stt: str = ""
+    stt_error: str = ""
+    stt_prompt: str = ""
+    """С какой подсказкой распознавали: у уточнения она из прошлого ответа."""
+
+    question: str = ""
+    model: str = ""
+    effort: str = ""
+    answer: str = ""
+    truncated: bool = False
+    """Ответ упёрся в max_tokens и оборван."""
+
+    first_s: float = 0.0
+    """От запроса до первого слова ответа."""
+
+    answer_s: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    error: str = ""
+    total_s: float = 0.0
+
+
 class Journal:
     """Дописывает записи в dictations.jsonl, переживая любые сбои записи."""
 
@@ -199,7 +250,7 @@ class Journal:
     def path(self) -> Path:
         return self._path
 
-    def write(self, record: Record | Correction) -> None:
+    def write(self, record: Record | Correction | AskRecord) -> None:
         """Сбой журнала не должен стоить человеку продиктованной фразы."""
         if not self.enabled:
             return
