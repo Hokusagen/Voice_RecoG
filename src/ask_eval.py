@@ -326,7 +326,11 @@ def cmd_report() -> int:
 
     # Имя первого прогона — ключ оценок в браузере: с ним страница, дополненная
     # новым кандидатом, видит оценки, поставленные до этого.
-    data = {"run": first_run, "items": ordered}
+    # Бесплатный запас — третья ось выбора рядом с качеством и скоростью. Его
+    # не померить прогоном: он из условий тарифа и пишется в candidates.json
+    # полем free.
+    free = {name: spec.get("free", "") for name, spec in load_candidates().items()}
+    data = {"run": first_run, "items": ordered, "free": free}
     page = ROOT / f"report-{first_run}.html"
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     page.write_text(_PAGE.replace("/*DATA*/null", payload), encoding="utf-8")
@@ -444,9 +448,9 @@ function update() {
   document.getElementById("progress").textContent = "оценено " + done + " из " + total;
   const rows = Object.entries(per).map(([name, p]) =>
     "<tr><td>" + name + "</td><td>" + p.ok + "</td><td>" + p.bad + "</td><td>" + p.little + " / " + p.fit + " / " + p.much + "</td><td>" + p.best +
-    "</td><td>" + (median(p.first) ?? 0).toFixed(1) + "</td><td>" + (median(p.took) ?? 0).toFixed(1) + "</td><td>" + Math.round(median(p.think) ?? 0) + "</td><td>" + p.cut + "</td><td>" + p.fail + "</td></tr>").join("");
+    "</td><td>" + (median(p.first) ?? 0).toFixed(1) + "</td><td>" + (median(p.took) ?? 0).toFixed(1) + "</td><td>" + Math.round(median(p.think) ?? 0) + "</td><td>" + p.cut + "</td><td>" + p.fail + "</td><td style=\"text-align:left\">" + (DATA.free[name] || "") + "</td></tr>").join("");
   document.getElementById("summary").innerHTML =
-    "<table><tr><th>Кандидат</th><th>верно</th><th>ошибка</th><th>мало / в самый раз / много</th><th>лучший</th><th>первое слово, с</th><th>ответ, с</th><th>раздумья, ток.</th><th>оборван</th><th>отказ</th></tr>" + rows + "</table>";
+    "<table><tr><th>Кандидат</th><th>верно</th><th>ошибка</th><th>мало / в самый раз / много</th><th>лучший</th><th>первое слово, с</th><th>ответ, с</th><th>раздумья, ток.</th><th>оборван</th><th>отказ</th><th>бесплатно</th></tr>" + rows + "</table>";
 }
 document.getElementById("reveal").onclick = () => document.body.classList.toggle("revealed");
 document.getElementById("copy").onclick = async () => {
