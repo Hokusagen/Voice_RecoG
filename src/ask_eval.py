@@ -9,6 +9,11 @@
 ответы перемешаны и подписаны буквами; кто есть кто, открывается кнопкой уже
 после оценки, вместе со сводкой по кандидатам.
 
+Оценка — только «лучший» и «худший» ответ на вопрос. Судить, верно ли и в меру
+ли, по каждому ответу долго и самому оценщику не всегда по силам, а выбрать
+крайние из четырёх — быстро и устойчиво: это шкалирование «лучший — худший»
+(best–worst scaling), счёт кандидата — (лучших − худших) / ответов.
+
 Всё лежит рядом с журналом, в каталоге ask_eval: вопросы личные, ключи чужих
 серверов тоже, поэтому в репозиторий отсюда не попадает ничего. Кандидат — это
 сервер, модель и глубина раздумий; сервер без url — тот же, что у правки.
@@ -353,29 +358,26 @@ _PAGE = r"""<!doctype html>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
 <style>
-:root{--bg:#f6f5f2;--card:#fff;--text:#1d1d1b;--muted:#6b6a65;--line:#dedcd5;--accent:#2f6fde;--bad:#c4402f;--good:#1f8a5b}
-@media (prefers-color-scheme:dark){:root{--bg:#191917;--card:#22221f;--text:#ecebe6;--muted:#a3a29b;--line:#3a3934;--accent:#7aa7ff;--bad:#ff8a7a;--good:#5fd39b}}
+:root{--bg:#f6f5f2;--card:#fff;--text:#1d1d1b;--muted:#6b6a65;--line:#dedcd5;--accent:#2f6fde;--bad:#c4402f}
+@media (prefers-color-scheme:dark){:root{--bg:#191917;--card:#22221f;--text:#ecebe6;--muted:#a3a29b;--line:#3a3934;--accent:#7aa7ff;--bad:#ff8a7a}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,"Segoe UI",sans-serif}
 header{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 header b{font-weight:600}main{max-width:1280px;margin:0 auto;padding:16px}
 .q{margin:0 0 36px}.q h2{font-size:17px;font-weight:600;margin:0 0 4px}.before{color:var(--muted);font-size:13px;margin:0 0 8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
 .a{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column}
-.a.best{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.a.best{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}.a.worst{border-color:var(--bad);box-shadow:0 0 0 1px var(--bad)}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}
 .letter{font-weight:700;font-size:16px}.who{color:var(--muted);font-size:12px;display:none}.revealed .who{display:inline}
 .body{flex:1;overflow-wrap:anywhere}.body p{margin:0 0 8px}.body ul,.body ol{margin:0 0 8px;padding-left:20px}
 .body pre{background:var(--bg);padding:8px;border-radius:6px;overflow:auto;font-size:13px}.body code{font-size:13px}
-.err{color:var(--bad)}.ctl{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{border:0;background:none;color:var(--text);padding:3px 8px;font:inherit;font-size:13px;cursor:pointer}
-.seg button+button{border-left:1px solid var(--line)}.seg button.on{background:var(--accent);color:#fff}
-.seg.bad button.on{background:var(--bad)}button.star{border:1px solid var(--line);border-radius:8px;background:none;color:var(--text);font:inherit;font-size:13px;padding:3px 8px;cursor:pointer}
-button.star.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.err{color:var(--bad)}.ctl{display:flex;gap:6px;margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+.pick{border:1px solid var(--line);border-radius:8px;background:none;color:var(--text);font:inherit;font-size:13px;padding:3px 10px;cursor:pointer}
+.pick.on{background:var(--accent);border-color:var(--accent);color:#fff}.pick.bad.on{background:var(--bad);border-color:var(--bad)}
 .act{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:5px 12px;font:inherit;cursor:pointer}
 .stats{color:var(--muted);font-size:12px;display:none;margin-top:6px}.revealed .stats{display:block}
-table{border-collapse:collapse;margin:8px 0 24px;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:4px 10px;text-align:right}td:first-child,th:first-child{text-align:left}
-#summary{display:none}.revealed #summary{display:block}
+table{border-collapse:collapse;margin:8px 0 6px;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:4px 10px;text-align:right}td:first-child,th:first-child,td:last-child,th:last-child{text-align:left}
+#summary{display:none}.revealed #summary{display:block}#summary p{color:var(--muted);font-size:13px;margin:0 0 24px}
 </style></head><body>
 <header><b>Ответы Дарви вслепую</b><span id="progress"></span>
 <button class="act" id="reveal">Показать модели</button><button class="act" id="copy">Скопировать оценки</button>
@@ -386,8 +388,8 @@ const DATA = /*DATA*/null;
 const KEY = "ask-eval-" + DATA.run;
 let marks = {};
 try { marks = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) {}
-marks.items = marks.items || {}; marks.best = marks.best || {};
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) {} update(); };
+marks.best = marks.best || {}; marks.worst = marks.worst || {};
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) {} };
 
 const MATH = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g;
 function render(md) {
@@ -395,13 +397,10 @@ function render(md) {
   const safe = md.replace(MATH, m => { kept.push(m); return "@@" + (kept.length - 1) + "@@"; });
   return marked.parse(safe).replace(/@@(\d+)@@/g, (_, i) => kept[+i].replace(/&/g, "&amp;").replace(/</g, "&lt;"));
 }
-function seg(values, current, onPick, cls) {
-  const box = document.createElement("span"); box.className = "seg " + (cls || "");
-  for (const v of values) {
-    const b = document.createElement("button"); b.textContent = v; if (v === current) b.classList.add("on");
-    b.onclick = () => { onPick(current === v ? null : v); }; box.appendChild(b);
-  }
-  return box;
+function pick(kind, other, qid, id) {
+  marks[kind][qid] = marks[kind][qid] === id ? undefined : id;
+  if (marks[other][qid] === id) marks[other][qid] = undefined;
+  save(); draw();
 }
 function draw() {
   const list = document.getElementById("list"); list.innerHTML = "";
@@ -413,8 +412,8 @@ function draw() {
     if (item.before.length) { const p = document.createElement("p"); p.className = "before"; p.textContent = "До этого: " + item.before.join(" → "); sec.appendChild(p); }
     const grid = document.createElement("div"); grid.className = "grid";
     for (const a of item.answers) {
-      const m = marks.items[a.id] || {};
-      const card = document.createElement("div"); card.className = "a" + (marks.best[qid] === a.id ? " best" : "");
+      const card = document.createElement("div");
+      card.className = "a" + (marks.best[qid] === a.id ? " best" : "") + (marks.worst[qid] === a.id ? " worst" : "");
       card.innerHTML = '<div class="head"><span class="letter">' + a.letter + '</span><span class="who"></span></div><div class="body"></div><div class="stats"></div><div class="ctl"></div>';
       card.querySelector(".who").textContent = a.candidate;
       const body = card.querySelector(".body");
@@ -423,11 +422,10 @@ function draw() {
       if (!a.error) card.querySelector(".stats").textContent =
         "первое слово " + a.first_s.toFixed(1) + " с · ответ " + a.took_s.toFixed(1) + " с · " + a.completion_tokens + " ток. (раздумья " + a.reasoning_tokens + ")" + (a.truncated ? " · ОБОРВАН" : "");
       const ctl = card.querySelector(".ctl");
-      ctl.appendChild(seg(["верно", "ошибка"], m.ok, v => { marks.items[a.id] = { ...m, ok: v }; save(); draw(); }, m.ok === "ошибка" ? "bad" : ""));
-      ctl.appendChild(seg(["мало", "в самый раз", "много"], m.size, v => { marks.items[a.id] = { ...m, size: v }; save(); draw(); }));
-      const star = document.createElement("button"); star.className = "star" + (marks.best[qid] === a.id ? " on" : ""); star.textContent = "лучший";
-      star.onclick = () => { marks.best[qid] = marks.best[qid] === a.id ? undefined : a.id; save(); draw(); };
-      ctl.appendChild(star);
+      for (const [kind, other, label, cls] of [["best", "worst", "лучший", ""], ["worst", "best", "худший", " bad"]]) {
+        const b = document.createElement("button"); b.className = "pick" + cls + (marks[kind][qid] === a.id ? " on" : "");
+        b.textContent = label; b.onclick = () => pick(kind, other, qid, a.id); ctl.appendChild(b);
+      }
       grid.appendChild(card);
     }
     sec.appendChild(grid); list.appendChild(sec);
@@ -439,28 +437,31 @@ function draw() {
 }
 function median(xs) { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const k = s.length >> 1; return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2; }
 function update() {
-  let total = 0, done = 0;
+  let done = 0;
   const per = {};
-  for (const item of DATA.items) for (const a of item.answers) {
-    total++; const m = marks.items[a.id] || {}; if (m.ok && m.size) done++;
-    const p = per[a.candidate] = per[a.candidate] || { n: 0, ok: 0, bad: 0, little: 0, fit: 0, much: 0, best: 0, first: [], took: [], think: [], cut: 0, fail: 0 };
-    p.n++; if (m.ok === "верно") p.ok++; if (m.ok === "ошибка") p.bad++;
-    if (m.size === "мало") p.little++; if (m.size === "в самый раз") p.fit++; if (m.size === "много") p.much++;
-    if (marks.best[item.chain + "." + item.turn] === a.id) p.best++;
-    if (a.error) p.fail++; else { p.first.push(a.first_s); p.took.push(a.took_s); p.think.push(a.reasoning_tokens); if (a.truncated) p.cut++; }
+  for (const item of DATA.items) {
+    const qid = item.chain + "." + item.turn;
+    if (marks.best[qid] && marks.worst[qid]) done++;
+    for (const a of item.answers) {
+      const p = per[a.candidate] = per[a.candidate] || { n: 0, best: 0, worst: 0, first: [], took: [], think: [], cut: 0, fail: 0 };
+      p.n++; if (marks.best[qid] === a.id) p.best++; if (marks.worst[qid] === a.id) p.worst++;
+      if (a.error) p.fail++; else { p.first.push(a.first_s); p.took.push(a.took_s); p.think.push(a.reasoning_tokens); if (a.truncated) p.cut++; }
+    }
   }
-  document.getElementById("progress").textContent = "оценено " + done + " из " + total;
-  const rows = Object.entries(per).map(([name, p]) =>
-    "<tr><td>" + name + "</td><td>" + p.ok + "</td><td>" + p.bad + "</td><td>" + p.little + " / " + p.fit + " / " + p.much + "</td><td>" + p.best +
-    "</td><td>" + (median(p.first) ?? 0).toFixed(1) + "</td><td>" + (median(p.took) ?? 0).toFixed(1) + "</td><td>" + Math.round(median(p.think) ?? 0) + "</td><td>" + p.cut + "</td><td>" + p.fail + "</td><td style=\"text-align:left\">" + (DATA.free[name] || "") + "</td></tr>").join("");
+  document.getElementById("progress").textContent = "оценено " + done + " из " + DATA.items.length + " вопросов";
+  const rows = Object.entries(per).sort((x, y) => (y[1].best - y[1].worst) - (x[1].best - x[1].worst)).map(([name, p]) =>
+    "<tr><td>" + name + "</td><td>" + p.best + "</td><td>" + p.worst + "</td><td>" + ((p.best - p.worst) / p.n).toFixed(2) +
+    "</td><td>" + (median(p.first) ?? 0).toFixed(1) + "</td><td>" + (median(p.took) ?? 0).toFixed(1) + "</td><td>" + Math.round(median(p.think) ?? 0) +
+    "</td><td>" + p.cut + "</td><td>" + p.fail + "</td><td>" + (DATA.free[name] || "") + "</td></tr>").join("");
   document.getElementById("summary").innerHTML =
-    "<table><tr><th>Кандидат</th><th>верно</th><th>ошибка</th><th>мало / в самый раз / много</th><th>лучший</th><th>первое слово, с</th><th>ответ, с</th><th>раздумья, ток.</th><th>оборван</th><th>отказ</th><th>бесплатно</th></tr>" + rows + "</table>";
+    "<table><tr><th>Кандидат</th><th>лучший</th><th>худший</th><th>счёт</th><th>первое слово, с</th><th>ответ, с</th><th>раздумья, ток.</th><th>оборван</th><th>отказ</th><th>бесплатно</th></tr>" + rows + "</table>" +
+    "<p>Счёт — (лучший − худший) / число ответов кандидата, от −1 до 1: так считают оценку «лучший — худший» (best–worst scaling).</p>";
 }
 document.getElementById("reveal").onclick = () => document.body.classList.toggle("revealed");
 document.getElementById("copy").onclick = async () => {
-  const out = { run: DATA.run, items: {}, best: {} };
-  for (const item of DATA.items) for (const a of item.answers) { const m = marks.items[a.id]; if (m) out.items[a.letter + " " + a.id] = m; }
-  for (const [q, id] of Object.entries(marks.best)) if (id) out.best[q] = id;
+  const name = id => { for (const item of DATA.items) for (const a of item.answers) if (a.id === id) return a.candidate; return id; };
+  const out = { run: DATA.run, best: {}, worst: {} };
+  for (const kind of ["best", "worst"]) for (const [q, id] of Object.entries(marks[kind])) if (id) out[kind][q] = name(id);
   const text = JSON.stringify(out);
   try { await navigator.clipboard.writeText(text); document.getElementById("note").textContent = "скопировано"; }
   catch (e) { prompt("Скопируйте оценки:", text); }
