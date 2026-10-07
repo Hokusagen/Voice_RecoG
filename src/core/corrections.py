@@ -120,24 +120,31 @@ class Corrector(QObject):
             target=self._capture, args=(hotkey,), name="correction", daemon=True
         ).start()
 
+    def _miss(self, reason: str, selection: str = "") -> None:
+        # Плашка показывает только заголовок, и причина отказа видна лишь
+        # здесь: без неё «не записал» нельзя отличить от «не скопировал».
+        shown = f" · выделено: «{selection[:80]}»" if selection else ""
+        print(f"[corrections] не записал: {reason}{shown}")
+        self.missed.emit(reason)
+
     def _capture(self, hotkey: str) -> None:
         try:
             selection = grab_selection(hotkey).strip()
         except ClipboardError as exc:
-            self.missed.emit(str(exc))
+            self._miss(str(exc))
             return
         if not selection:
-            self.missed.emit("выделите исправленный текст и нажмите ещё раз")
+            self._miss("выделите исправленный текст и нажмите ещё раз")
             return
 
         found = find(selection, self._journal.recent(_LOOKBACK))
         if found is None:
-            self.missed.emit("не нашёл, из какой это диктовки — выделите предложение целиком")
+            self._miss("не нашёл, из какой это диктовки — выделите предложение целиком", selection)
             return
 
         changes = diff_words(found.span, selection)
         if not changes:
-            self.missed.emit("здесь всё как продиктовано")
+            self._miss("здесь всё как продиктовано", selection)
             return
 
         correction = Correction(

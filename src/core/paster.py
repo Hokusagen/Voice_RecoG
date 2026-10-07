@@ -113,11 +113,23 @@ else:
 if sys.platform == "win32":
     import keyboard
 
+    #: Скан-коды физических клавиш C и V. По имени буквы keyboard ищет клавишу
+    #: в текущей раскладке и при русской находит для «c» сначала 0xE02E —
+    #: мультимедийную клавишу: Ctrl+C уходил мимо, и правка не копировалась.
+    #: Скан-код от раскладки не зависит, а Ctrl+C приложения ловят и в русской.
+    _SCANS = {"c": 46, "v": 47}
+
     def _release(name: str) -> None:
         keyboard.release(name)
 
     def _send(letter: str) -> None:
-        keyboard.send(f"ctrl+{letter}")
+        scan = _SCANS[letter]
+        keyboard.press("ctrl")
+        try:
+            keyboard.press(scan)
+            keyboard.release(scan)
+        finally:
+            keyboard.release("ctrl")
 
 else:
     from pynput.keyboard import Controller, Key
