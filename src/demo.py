@@ -238,6 +238,7 @@ def card_demo(cfg: Config) -> dict:
 
     Кнопки карточки живые: «Проверить в интернете» прогоняет перепроверку,
     «Вставить» печатает текст в терминал, крестик начинает разговор заново.
+    Свободный край тянется, и ширина, как в приложении, пишется в настройки.
     """
     from ui.card import AnswerCard
 
@@ -325,9 +326,14 @@ def card_demo(cfg: Config) -> dict:
         print("  карточка закрыта — разговор заново\n")
         later(2500, lambda: ask(0))
 
+    def resized(width: int) -> None:
+        cfg.save()
+        print(f"  ширина карточки {width} px — записал в config.json")
+
     card.recheck_requested.connect(recheck)
     card.insert_requested.connect(lambda text: print(f"  вставил бы: {text[:70]}…"))
     card.closed.connect(closed)
+    card.resized.connect(resized)
 
     print("Демо карточки. Кнопки живые; выход — «Остановить демо» слева вверху.\n")
     ask(0)

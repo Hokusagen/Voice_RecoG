@@ -115,6 +115,7 @@ class Controller(QObject):
         self.card.insert_requested.connect(self._on_card_insert)
         self.card.recheck_requested.connect(self._on_recheck)
         self.card.closed.connect(self._on_card_closed)
+        self.card.resized.connect(self._on_card_resized)
 
         self.tray.pause_toggled.connect(self._on_pause)
         self.tray.gpu_toggled.connect(self._on_release_gpu)
@@ -366,6 +367,12 @@ class Controller(QObject):
     def _on_card_closed(self) -> None:
         if self.asker is not None:
             self.asker.close()
+
+    @Slot(int)
+    def _on_card_resized(self, _width: int) -> None:
+        # Ширину карточка уже записала в ui.card_width; на диск — здесь, как и
+        # всё, что человек меняет мышью.
+        self.cfg.save()
 
     # ---------- меню трея ----------
 

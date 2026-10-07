@@ -6,10 +6,14 @@
 пилюли, потому что на нём читают абзацы, а не одну строку. Движение одно:
 высота растёт пружиной вслед за текстом, который приходит потоком.
 
-Окно сразу размером с самую большую карточку, а видимая карточка растёт внутри
-него. Менять размер окна каждый кадр — заметно дёргается; а прозрачные пиксели
-многослойного окна Windows пропускает к окнам под ним, так что пустая часть
-окна мыши не мешает.
+Ширину тянут мышью за свободный край, как у обычного окна: край у угла стоит
+на месте, а ширина запоминается в ui.card_width (отзыв на живой прогон 7.10:
+карточка на полсантиметра закрывала соседний чат).
+
+Окно сразу размером с самую большую карточку — во всю допустимую высоту и
+ширину, — а видимая карточка растёт и тянется внутри него. Менять размер окна
+каждый кадр — заметно дёргается; а прозрачные пиксели многослойного окна
+Windows пропускает к окнам под ним, так что пустая часть окна мыши не мешает.
 
 Стекло — снимок фона, размытый уменьшением, под плотной вуалью. Снимок делается
 до показа, пока окна нет на экране, и дальше не обновляется: под вуалью такой
@@ -27,6 +31,7 @@ from PySide6.QtCore import QRect, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QCursor,
+    QGuiApplication,
     QImage,
     QPainter,
     QPainterPath,
@@ -64,6 +69,17 @@ MARGIN = 20
 #: карточка подсказывает поверх работы, а не закрывает её целиком.
 MAX_SHARE = 0.6
 
+#: Самая широкая карточка — та же доля рабочей ширины: шире строки читаются
+#: хуже, а работа под карточкой закрыта почти вся.
+MAX_WIDTH_SHARE = 0.6
+
+#: Самая узкая карточка, px до масштаба; уже неё не дают и кнопки под ответом.
+MIN_WIDTH = 320
+
+#: Полоса, за которую тянут ширину: половина снаружи карточки, половина
+#: внутри — как невидимая рамка, за которую тянут окна Windows 10.
+GRIP = 10
+
 #: Как часто перерисовывать текст, пока он приходит: по токену — рябь, а раз в
 #: 70 мс текст ложится строками и высота растёт ровно.
 RENDER_MS = 70
@@ -90,6 +106,10 @@ class AnswerCard(QWidget):
     closed = Signal()
     """Человек закрыл карточку крестиком — разговор окончен."""
 
+    resized = Signal(int)
+    """Ширину дотянули и отпустили мышь: новая ширина, px до масштаба. В
+    ui.card_width она уже записана — осталось сохранить настройки."""
+
     def __init__(self, cfg: UIConfig) -> None:
         flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
         super().__init__(None, flags)
@@ -110,7 +130,13 @@ class AnswerCard(QWidget):
         self._backdrop: QImage | None = None
         self._light = False
         self._top = False
+        self._right = True
         self._max_h = 0
+        self._width = 0
+        """Ширина карточки, px с масштабом; окно всегда шириной _max_w."""
+
+        self._min_w = 0
+        self._max_w = 0
 
         self._height = Spring(0.0, response=0.42, damping=0.86)
         self._tick = QTimer(self)
@@ -181,6 +207,12 @@ class AnswerCard(QWidget):
         actions.setContentsMargins(0, 0, 0, 0)
         self._actions.hide()
         layout.addWidget(self._actions)
+
+        self._grip = _Grip(self)
+        self._grip.hide()
+        # Поля кнопок задаёт таблица стилей, а по кнопкам считается самая
+        # узкая карточка: стиль нужен до первого показа.
+        self._apply_material()
 
     def _action(self, label: str, slot) -> QPushButton:
         button = QPushButton(label)
@@ -289,6 +321,7 @@ class AnswerCard(QWidget):
         """Убрать карточку, не заканчивая разговор: человек вернулся к работе."""
         if not self.isVisible() or self._hiding:
             return
+        self._grip.release()
         self._hiding = True
         self._height.set(0.0)
         self._tick.start()
@@ -337,16 +370,22 @@ class AnswerCard(QWidget):
         screen = QApplication.screenAt(QCursor.pos()) if self.cfg.hud_follow_cursor else None
         screen = screen or QApplication.primaryScreen()
         area = screen.availableGeometry()
-        width = int(self.cfg.card_width * self._scale)
         self._max_h = int(area.height() * MAX_SHARE)
+        self._min_w = self._narrowest()
+        self._max_w = max(self._min_w, min(int(area.width() * MAX_WIDTH_SHARE), area.width() - 2 * MARGIN))
+        self._width = max(self._min_w, min(self._max_w, int(self.cfg.card_width * self._scale)))
         corner = (self.cfg.card_corner or "bottom-right").lower()
         self._top = corner.startswith("top")
-        x = area.left() + MARGIN if corner.endswith("left") else area.right() - MARGIN - width
+        self._right = not corner.endswith("left")
+        x = area.right() - MARGIN - self._max_w if self._right else area.left() + MARGIN
         y = area.top() + MARGIN if self._top else area.bottom() - MARGIN - self._max_h
-        self.setGeometry(x, y, width, self._max_h)
+        self.setGeometry(x, y, self._max_w, self._max_h)
 
         # Снимок — пока окна нет на экране, иначе в стекло попадёт оно само.
-        self._backdrop, self._light = _blurred(screen, QRect(x, y, width, self._max_h))
+        # Снимается всё окно: карточку могут растянуть, и под новой шириной
+        # тоже нужен фон, а снять его заново уже нельзя.
+        column = QRect(self._max_w - self._width if self._right else 0, 0, self._width, self._max_h)
+        self._backdrop, self._light = _blurred(screen, QRect(x, y, self._max_w, self._max_h), column)
         self._apply_material()
         self._question_label.setText(self._question)
         self._height.snap(0.0)
@@ -364,7 +403,9 @@ class AnswerCard(QWidget):
         bar.setValue(keep)
         self._retarget()
 
-    def _retarget(self) -> None:
+    def _retarget(self, snap: bool = False) -> None:
+        """Высота — под содержимое. snap — сразу, без пружины: когда тянут край,
+        пружина отставала бы от руки."""
         if not self.isVisible() or self._hiding:
             return
         wanted = self._wanted_height()
@@ -373,41 +414,82 @@ class AnswerCard(QWidget):
         # выше расчёта — и полоса остаётся навсегда.
         capped = wanted > self._max_h
         self._text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if capped else Qt.ScrollBarAlwaysOff)
-        self._height.set(float(min(wanted, self._max_h)))
+        target = float(min(wanted, self._max_h))
+        if snap:
+            self._height.snap(target)
+            self._place()
+            self.update()
+            return
+        self._height.set(target)
         if not self._tick.isActive():
             self._tick.start()
 
     def _wanted_height(self) -> int:
         """Высота, при которой виден весь ответ; потолок — забота вызывающего."""
-        inner = self.width() - 2 * PAD
-        # Мерить копию: ширину своего документа QTextBrowser выставляет сам по
-        # окну просмотра, а оно до первой раскладки ещё не знает своего размера.
-        doc = self._text.document().clone(self)
-        doc.setTextWidth(self.width() - PAD - (PAD - 6))
-        text_h = int(doc.size().height())
-        doc.deleteLater()
+        inner = self._width - 2 * PAD
+        text_h = self._text_height(self._width - PAD - (PAD - 6))
         total = PAD - 4 + max(self._question_label.heightForWidth(inner - 30), self._close.height())
         total += GAP + text_h + 4
-        if self._status.isVisible():
+        if not self._status.isHidden():
             total += GAP + self._status.heightForWidth(inner)
-        if self._actions.isVisible():
+        if not self._actions.isHidden():
             total += GAP + self._actions.sizeHint().height()
         total += PAD
         return total
 
+    def _text_height(self, width: int) -> int:
+        """Высота текста ответа при ширине width."""
+        doc = self._text.document()
+        # Ширину своего документа QTextBrowser выставляет сам по окну
+        # просмотра. Если текст уже разложен на нужную ширину — мерка готова;
+        # нет (до первой раскладки или под полосой прокрутки) — мерить копию.
+        if abs(doc.textWidth() - width) < 0.5:
+            return int(doc.size().height())
+        copy = doc.clone(self)
+        copy.setTextWidth(width)
+        height = int(copy.size().height())
+        copy.deleteLater()
+        return height
+
+    def _narrowest(self) -> int:
+        """Уже этой ширины кнопки под ответом не помещаются в ряд."""
+        buttons = (self._insert, self._copy, self._recheck)
+        row = sum(button.sizeHint().width() for button in buttons) + 6 * (len(buttons) - 1)
+        return max(int(MIN_WIDTH * self._scale), row + PAD + (PAD - 6))
+
     def _card_rect(self) -> QRect:
         height = max(0, min(self._max_h, int(round(self._height.value))))
-        if self._top:
-            return QRect(0, 0, self.width(), height)
-        return QRect(0, self._max_h - height, self.width(), height)
+        x = self._max_w - self._width if self._right else 0
+        y = 0 if self._top else self._max_h - height
+        return QRect(x, y, self._width, height)
 
     def _place(self) -> None:
         rect = self._card_rect()
         # Растёт карточка, а не сжимается текст внутри неё: содержимое — по
         # высоте цели пружины, прижато к верху, лишнее срезает окошко.
         self._clip.setGeometry(rect)
-        self._body.setGeometry(0, 0, self.width(), max(rect.height(), int(self._height.target)))
-        self._clip.setVisible(rect.height() > 2 * PAD)
+        self._body.setGeometry(0, 0, rect.width(), max(rect.height(), int(self._height.target)))
+        shown = rect.height() > 2 * PAD
+        self._clip.setVisible(shown)
+        edge = rect.left() if self._right else rect.right() + 1
+        self._grip.setGeometry(edge - GRIP // 2, rect.top(), GRIP, rect.height())
+        self._grip.setVisible(shown and not self._hiding)
+
+    def _drag(self, width: int) -> None:
+        """Свободный край тянут: ширина за мышью, край у угла стоит на месте."""
+        width = max(self._min_w, min(self._max_w, int(width)))
+        if width == self._width or self._hiding:
+            return
+        self._width = width
+        self._place()
+        self._retarget(snap=True)
+
+    def _dropped(self) -> None:
+        """Мышь отпустили: ширину — в настройки, до масштаба."""
+        width = round(self._width / self._scale)
+        if width != self.cfg.card_width:
+            self.cfg.card_width = width
+            self.resized.emit(width)
 
     def _on_tick(self) -> None:
         self._height.step(0.016)
@@ -439,6 +521,61 @@ class AnswerCard(QWidget):
         painter.setPen(QPen(glass.edge_bottom if self._light else glass.edge_top.darker(160), 1.0))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+
+
+class _Grip(QWidget):
+    """Свободный край карточки: за него тянут ширину, как у обычного окна.
+
+    Ширина идёт за курсором по опросу, а не по событиям мыши. Окно карточки
+    никогда не становится активным, а «только окно переднего плана может
+    захватить мышь; фоновое получает её события, лишь пока курсор над его
+    видимой частью» (Microsoft, Mouse Input Overview). Быстрая рука уходила бы
+    с края в прозрачную часть окна — и край замирал бы, не дождавшись её.
+    """
+
+    def __init__(self, card: AnswerCard) -> None:
+        super().__init__(card)
+        self._card = card
+        self._from: tuple[int, int] | None = None
+        """Где курсор и какая ширина были в момент нажатия."""
+
+        self.setCursor(Qt.SizeHorCursor)
+        self._poll = QTimer(self)
+        self._poll.setInterval(16)
+        self._poll.timeout.connect(self._follow)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 — имя из Qt
+        # Полностью прозрачные пиксели Windows отдаёт окну под карточкой, и
+        # наружная половина края мышь не ловила бы. Альфа 1 глазу не видна.
+        QPainter(self).fillRect(self.rect(), QColor(0, 0, 0, 1))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 — имя из Qt
+        if event.button() == Qt.LeftButton:
+            self._from = (QCursor.pos().x(), self._card._width)
+            self._poll.start()
+
+    def mouseReleaseEvent(self, _event) -> None:  # noqa: N802 — имя из Qt
+        self.release()
+
+    def release(self) -> None:
+        """Конец перетаскивания: последнее положение курсора — и ширину в настройки."""
+        if self._from is None:
+            return
+        self._follow(final=True)
+        self._from = None
+        self._poll.stop()
+        self._card._dropped()
+
+    def _follow(self, final: bool = False) -> None:
+        if self._from is None:
+            return
+        if not final and not _primary_button_down():
+            # Кнопку отпустили там, где событие до карточки не дошло.
+            self.release()
+            return
+        start_x, start_width = self._from
+        shift = QCursor.pos().x() - start_x
+        self._card._drag(start_width - shift if self._card._right else start_width + shift)
 
 
 # ---------- помощники ----------
@@ -560,8 +697,9 @@ def _source_label(url: str, shared_host: bool) -> str:
     return f"{host}/…/{tail}" if tail else host
 
 
-def _blurred(screen, region: QRect) -> tuple[QImage | None, bool]:
-    """Снимок фона под карточкой, размытый уменьшением, и светлый ли он."""
+def _blurred(screen, region: QRect, focus: QRect) -> tuple[QImage | None, bool]:
+    """Снимок фона под окном карточки, размытый уменьшением, и светлый ли он
+    там, где встанет сама карточка (focus — в координатах окна)."""
     try:
         grabbed = screen.grabWindow(0, region.x(), region.y(), region.width(), region.height())
     except Exception as exc:  # noqa: BLE001 — без снимка карточка обойдётся вуалью
@@ -577,10 +715,28 @@ def _blurred(screen, region: QRect) -> tuple[QImage | None, bool]:
     # Средняя светимость по уменьшенному снимку: этого хватает, чтобы выбрать
     # вуаль, и не стоит прохода по миллиону пикселей.
     raw = np.frombuffer(small.constBits(), dtype=np.uint8, count=small.sizeInBytes())
-    pixels = raw.reshape(small.height(), small.bytesPerLine())[:, : small.width() * 4].reshape(-1, 4)
-    luma = (0.0722 * pixels[:, 0] + 0.7152 * pixels[:, 1] + 0.2126 * pixels[:, 2]).mean() / 255.0
+    pixels = raw.reshape(small.height(), small.bytesPerLine())[:, : small.width() * 4]
+    pixels = pixels.reshape(small.height(), small.width(), 4)
+    # Окно шире карточки, а вуаль выбирается по тому, что под ней самой.
+    left, right = focus.left() // BLUR_DIV, -(-(focus.right() + 1) // BLUR_DIV)
+    under = pixels[:, max(0, left):max(left + 1, right)].reshape(-1, 4)
+    luma = (0.0722 * under[:, 0] + 0.7152 * under[:, 1] + 0.2126 * under[:, 2]).mean() / 255.0
     blurred = small.scaled(region.width(), region.height(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return blurred, bool(luma >= theme.MATERIAL_THRESHOLD)
+
+
+def _primary_button_down() -> bool:
+    """Зажата ли основная кнопка мыши сейчас, а не в последнем событии окна."""
+    if sys.platform != "win32":
+        return bool(QGuiApplication.mouseButtons() & Qt.LeftButton)
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    # GetAsyncKeyState смотрит на физические кнопки, а у левши, поменявшего
+    # их местами (SM_SWAPBUTTON), основная — правая.
+    sm_swapbutton, vk_lbutton, vk_rbutton = 23, 0x01, 0x02
+    button = vk_rbutton if user32.GetSystemMetrics(sm_swapbutton) else vk_lbutton
+    return bool(user32.GetAsyncKeyState(button) & 0x8000)
 
 
 def _no_activate(widget: QWidget) -> None:
