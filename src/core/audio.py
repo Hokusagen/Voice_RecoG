@@ -19,6 +19,7 @@ import time
 import wave
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -224,3 +225,53 @@ def to_wav(audio: np.ndarray, sample_rate: int) -> bytes:
         wav.setframerate(sample_rate)
         wav.writeframes((pcm * 32767).astype("<i2").tobytes())
     return buffer.getvalue()
+
+
+class AudioArchive:
+    """Каталог записей, который не растёт сверх потолка.
+
+    Журнал хранит только итог Whisper, а распознавание с другой подсказкой
+    или другой моделью сравнимо только на тех же самых записях. Поэтому звук
+    лежит рядом с журналом под ключом записи. Потолок — числом файлов, объёмом
+    или обоими; сверх него уходят самые старые.
+    """
+
+    def __init__(self, folder: Path, max_files: int = 0, max_mb: float = 0.0) -> None:
+        self.folder = folder
+        self._max_files = max_files
+        self._max_bytes = int(max_mb * 1024 * 1024)
+
+    def keep(self, audio: np.ndarray, sample_rate: int, name: str) -> str:
+        """Сохраняет запись; возвращает имя файла или пусто.
+
+        Сбой записи не должен стоить фразы — как и сбой журнала.
+        """
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            path = self.folder / f"{name}.wav"
+            path.write_bytes(to_wav(audio, sample_rate))
+        except OSError as exc:
+            print(f"[audio] не удалось сохранить запись: {exc}")
+            return ""
+        try:
+            self._prune()
+        except OSError as exc:
+            print(f"[audio] не удалось убрать старые записи: {exc}")
+        return path.name
+
+    def _prune(self) -> None:
+        files = sorted(
+            ((path, path.stat()) for path in self.folder.glob("*.wav")),
+            key=lambda item: item[1].st_mtime,
+            reverse=True,
+        )
+        total = 0
+        for index, (path, stat) in enumerate(files):
+            total += stat.st_size
+            # Свежую запись не трогаем, даже если она одна больше потолка:
+            # иначе в журнал уйдёт имя файла, которого уже нет.
+            if index and (
+                (self._max_files and index >= self._max_files)
+                or (self._max_bytes and total > self._max_bytes)
+            ):
+                path.unlink(missing_ok=True)

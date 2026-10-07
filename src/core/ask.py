@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from config import AskConfig, app_data_dir
-from core.audio import to_wav
+from core.audio import AudioArchive
 from core.journal import new_id
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ class Asker:
         self.cfg = cfg
         self._cloud = cloud
         self._current: Conversation | None = None
-        self._audio_dir = app_data_dir() / "asks"
+        self._archive = AudioArchive(app_data_dir() / "asks", max_files=cfg.keep_audio_max)
 
     @property
     def configured(self) -> bool:
@@ -144,23 +144,7 @@ class Asker:
         return answer
 
     def keep_audio(self, audio: np.ndarray, sample_rate: int, name: str) -> str:
-        """Сохраняет запись вопроса; возвращает имя файла или пусто.
-
-        Сбой записи не должен стоить вопроса — как и сбой журнала.
-        """
+        """Сохраняет запись вопроса; возвращает имя файла или пусто."""
         if not self.cfg.keep_audio:
             return ""
-        try:
-            self._audio_dir.mkdir(parents=True, exist_ok=True)
-            path = self._audio_dir / f"{name}.wav"
-            path.write_bytes(to_wav(audio, sample_rate))
-            self._prune()
-        except OSError as exc:
-            print(f"[ask] не удалось сохранить запись: {exc}")
-            return ""
-        return path.name
-
-    def _prune(self) -> None:
-        files = sorted(self._audio_dir.glob("*.wav"), key=lambda p: p.stat().st_mtime)
-        for path in files[: max(0, len(files) - self.cfg.keep_audio_max)]:
-            path.unlink(missing_ok=True)
+        return self._archive.keep(audio, sample_rate, name)

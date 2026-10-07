@@ -16,11 +16,11 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from config import AudioConfig
+from config import AudioConfig, app_data_dir
 from core import journal
 from core import stt
 from core.ask import Asker, AskFailed
-from core.audio import loudness
+from core.audio import AudioArchive, loudness
 from core.cloud import CloudClient, CloudLimited, CloudUnavailable
 from core.journal import AskRecord, Attempt, Journal, Record
 from core.llm import LLMUnavailable, OllamaClient, Polished
@@ -107,6 +107,10 @@ class Pipeline(QObject):
         self._audio = audio
         self._sample_rate = audio.sample_rate
         self._journal = journal_log or Journal(enabled=False)
+        self._archive = (
+            AudioArchive(app_data_dir() / "dictations", max_mb=audio.keep_dictations_mb)
+            if audio.keep_dictations else None
+        )
 
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -272,6 +276,11 @@ class Pipeline(QObject):
         sound = loudness(job.audio, self._sample_rate, self._audio.silence_rms)
         record.rms, record.peak = sound.rms, sound.peak
         record.clipped, record.silence = sound.clipped, sound.silence
+        record.stt_prompt = self._whisper.cfg.initial_prompt
+        # До распознавания, а не после: запись, на которой облако сорвалось,
+        # для перемера ценнее всего.
+        if self._archive is not None:
+            record.audio_file = self._archive.keep(job.audio, self._sample_rate, record.id)
 
         self._emit(Stage.TRANSCRIBING, "Распознаю", f"{seconds:.1f} с записи")
         heard = time.monotonic()
