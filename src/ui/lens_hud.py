@@ -69,6 +69,12 @@ SWEEP_S = 0.9           # обход света по смене состояни
 LIGHT0 = -math.pi / 4   # покой: свет сверху справа
 FIT_SLACK = 30.0        # подпись проступает, когда до кромки ~8 px
 FROST = 2.4             # радиус диска размытия шейдера; σ ≈ 0.47·r
+#: Тон стекла: out = in·множитель + сдвиг — светлая вуаль in + 0.086·(1 − in).
+#: На чёрном те же +0.086, что у Apple, а светлое почти не тронуто: тон Apple
+#: in·1.015 + 0.086 делал фон #F0F0EF чистым белым — плашка высветляла светлые
+#: окна, — и выше белого шейдер не обрезал, а композитор обрезал: шёлк на
+#: кромке светлел кольцом против середины. Те же числа — в ui.lens_shader.
+GLASS_TONE = (0.914, 0.086)
 RESULT_S = 0.52         # прорисовка итогового значка
 INSERTED_HOLD_MS = 2200
 #: Поле вокруг подписи в её текстуре, px макета. Ореол и размытие появления
@@ -169,10 +175,32 @@ class _Params(Structure):
 # ---------- движение ----------
 
 
+class _VoiceGain:
+    """Автоусиление голоса: опора и шумовой пол.
+
+    Живёт в плашке, а не в потоке кадров: поток заводится заново при каждом
+    показе, а следующая диктовка должна начинаться с громкости прошлой.
+    """
+
+    def __init__(self) -> None:
+        self.ref = VOICE_REF0
+        self.floor = VOICE_FLOOR0
+
+    def __call__(self, db: float, dt: float) -> float:
+        """Громкость блока 0…1 в окне, которое подстраивается под голос и шум."""
+        self.floor = min(db, self.floor + VOICE_FLOOR_RISE * dt)
+        if db > self.floor + VOICE_GATE:
+            self.ref += (db - self.ref) * (1.0 - math.exp(-dt / VOICE_REF_TAU))
+            self.ref = min(max(self.ref, VOICE_REF_RANGE[0]), VOICE_REF_RANGE[1])
+        lo = max(self.ref - VOICE_SPAN[0], self.floor + VOICE_ROOM)
+        hi = self.ref + VOICE_SPAN[1]
+        return clamp01((db - lo) / max(hi - lo, 6.0)) ** 0.7
+
+
 class _Motion:
     """Пружины плашки — перенос frame() из lens.js, StatusFlash из kit.js и морфа island.js."""
 
-    def __init__(self) -> None:
+    def __init__(self, gain: _VoiceGain | None = None) -> None:
         self.mat = Spring(0.0, 0.45, 0.8)
         self.w = Spring(BASE_W, 0.5, 0.85)
         self.shake = Spring(0.0, 0.3, 0.35)
@@ -202,26 +230,13 @@ class _Motion:
         self.syllable = 0.0
         self.phrase = 0.0
         self.flow = 0.0
-        # Опора и шум живут, пока запущено приложение: следующая диктовка
-        # начинается с громкости прошлой, а не с нуля.
-        self.voice_ref = VOICE_REF0
-        self.voice_floor = VOICE_FLOOR0
-
-    def loudness(self, db: float, dt: float) -> float:
-        """Громкость блока 0…1 в окне, которое подстраивается под голос и шум."""
-        self.voice_floor = min(db, self.voice_floor + VOICE_FLOOR_RISE * dt)
-        if db > self.voice_floor + VOICE_GATE:
-            self.voice_ref += (db - self.voice_ref) * (1.0 - math.exp(-dt / VOICE_REF_TAU))
-            self.voice_ref = min(max(self.voice_ref, VOICE_REF_RANGE[0]), VOICE_REF_RANGE[1])
-        lo = max(self.voice_ref - VOICE_SPAN[0], self.voice_floor + VOICE_ROOM)
-        hi = self.voice_ref + VOICE_SPAN[1]
-        return clamp01((db - lo) / max(hi - lo, 6.0)) ** 0.7
+        self.gain = gain if gain is not None else _VoiceGain()
 
     def voice(self, dt: float, level: float, listening: bool) -> tuple[float, float, float, float]:
         """Огибающие голоса: (видимость, фраза 0…1, слог, накопленная фаза течения дыма)."""
         x = 0.0
         if listening and level > 1e-6:
-            x = self.loudness(20.0 * math.log10(level), dt)
+            x = self.gain(20.0 * math.log10(level), dt)
         a = 1.0 - math.exp(-dt / (0.07 if x > self.syllable else 0.28))
         self.syllable += (x - self.syllable) * a
         a = 1.0 - math.exp(-dt / (PHRASE_ATTACK if self.syllable > self.phrase else PHRASE_DECAY))
@@ -523,6 +538,7 @@ class LensHud(QObject):
         self._text_fresh = False
         self._light_bg = False
         self._luminance: float | None = None
+        self._voice_gain = _VoiceGain()
         self._geometry = _Geometry()
         self._applied_key = None
         self._applied_geometry: _Geometry | None = None
@@ -553,9 +569,9 @@ class LensHud(QObject):
         root.size = Vector2(*self._view)
         self._comp_target.root = root
 
-        # Живая середина: фон под визуалом → размытие → тон Apple (out = in·1.015 + 0.086).
+        # Живая середина: фон под визуалом → размытие → тон стекла (GLASS_TONE).
         # σ — настоящая: «frost 2.4» лаборатории — радиус диска выборок, σ ≈ 0.47·r.
-        gain, lift = 1.015, 0.086
+        gain, lift = GLASS_TONE
         matrix = [gain, 0, 0, 0, 0, gain, 0, 0, 0, 0, gain, 0, 0, 0, 0, 1, lift, lift, lift, 0]
         blur = comp.gaussian_blur(comp.source_parameter("backdrop"), 0.472 * FROST * self._scale)
         tone = comp.color_matrix(blur.as_source, matrix)
@@ -824,7 +840,7 @@ class LensHud(QObject):
         h, w = raw.shape[:2]
         middle = raw[h // 3: 2 * h // 3: 2, w // 4: 3 * w // 4: 4, :3].astype(np.float32)
         luminance = float((middle @ np.array([0.0722, 0.7152, 0.2126], dtype=np.float32)).mean() / 255.0)
-        glass = luminance * 1.015 + 0.086
+        glass = luminance * GLASS_TONE[0] + GLASS_TONE[1]
         band = 0.05
         if was_light:
             return glass > theme.MATERIAL_THRESHOLD - band
@@ -851,7 +867,7 @@ class LensHud(QObject):
             grabber.close()
 
     def _render_loop(self) -> None:
-        motion = _Motion()
+        motion = _Motion(self._voice_gain)
         params = _Params()
         p = self._params_static(params)
         started = last = time.perf_counter()
