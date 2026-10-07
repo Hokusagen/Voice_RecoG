@@ -69,6 +69,12 @@ SWEEP_S = 0.9           # обход света по смене состояни
 LIGHT0 = -math.pi / 4   # покой: свет сверху справа
 FIT_SLACK = 30.0        # подпись проступает, когда до кромки ~8 px
 FROST = 2.4             # радиус диска размытия шейдера; σ ≈ 0.47·r
+#: Тон стекла: out = in·множитель + сдвиг — светлая вуаль in + 0.086·(1 − in).
+#: На чёрном те же +0.086, что у Apple, а светлое почти не тронуто: тон Apple
+#: in·1.015 + 0.086 делал фон #F0F0EF чистым белым — плашка высветляла светлые
+#: окна, — и выше белого шейдер не обрезал, а композитор обрезал: шёлк на
+#: кромке светлел кольцом против середины. Те же числа — в ui.lens_shader.
+GLASS_TONE = (0.914, 0.086)
 RESULT_S = 0.52         # прорисовка итогового значка
 INSERTED_HOLD_MS = 2200
 #: Поле вокруг подписи в её текстуре, px макета. Ореол и размытие появления
@@ -553,9 +559,9 @@ class LensHud(QObject):
         root.size = Vector2(*self._view)
         self._comp_target.root = root
 
-        # Живая середина: фон под визуалом → размытие → тон Apple (out = in·1.015 + 0.086).
+        # Живая середина: фон под визуалом → размытие → тон стекла (GLASS_TONE).
         # σ — настоящая: «frost 2.4» лаборатории — радиус диска выборок, σ ≈ 0.47·r.
-        gain, lift = 1.015, 0.086
+        gain, lift = GLASS_TONE
         matrix = [gain, 0, 0, 0, 0, gain, 0, 0, 0, 0, gain, 0, 0, 0, 0, 1, lift, lift, lift, 0]
         blur = comp.gaussian_blur(comp.source_parameter("backdrop"), 0.472 * FROST * self._scale)
         tone = comp.color_matrix(blur.as_source, matrix)
@@ -824,7 +830,7 @@ class LensHud(QObject):
         h, w = raw.shape[:2]
         middle = raw[h // 3: 2 * h // 3: 2, w // 4: 3 * w // 4: 4, :3].astype(np.float32)
         luminance = float((middle @ np.array([0.0722, 0.7152, 0.2126], dtype=np.float32)).mean() / 255.0)
-        glass = luminance * 1.015 + 0.086
+        glass = luminance * GLASS_TONE[0] + GLASS_TONE[1]
         band = 0.05
         if was_light:
             return glass > theme.MATERIAL_THRESHOLD - band
