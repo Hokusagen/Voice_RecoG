@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Голос в стекле</title>
+<style>
+  :root {
+    --bg: #0d0e11;
+    --panel: #15171b;
+    --line: #23262c;
+    --text: #e9eaee;
+    --muted: #8d919b;
+    --accent: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; padding: 24px 22px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px 32px; margin-bottom: 26px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0.1px; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+  .seg { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+  .seg > span { font-size: 12.5px; }
+  .seg .opts { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .seg button {
+    all: unset; cursor: pointer; padding: 5px 12px; border-radius: 999px; color: var(--muted); font-size: 13px;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: #2b2f37; color: var(--accent); }
+  /* Класс задаёт inline-flex и перебивает атрибут hidden — возвращаем ему силу. */
+  .seg[hidden] { display: none; }
+  .note { align-self: center; color: #ff8a80; font-size: 12.5px; }
+  .note:empty { display: none; }
+  .heads, .row { display: grid; grid-template-columns: 178px 1fr; gap: 0 18px; }
+  .heads { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+  .heads .cols, .row .tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+  .heads .cols span { display: block; }
+  .row { padding: 16px 0; border-top: 1px solid var(--line); align-items: center; }
+  .meta .num { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .meta h2 { margin: 2px 0 4px; font-size: 18px; font-weight: 600; }
+  .meta p { margin: 0; color: var(--muted); font-size: 13px; }
+  .tile { display: block; border-radius: 10px; overflow: hidden; background: #000; }
+  .tile canvas { display: block; }
+  /* Только плитки, без подписей: для разглядывания снимками. */
+  body.bare { padding: 0; }
+  body.bare header, body.bare .heads, body.bare .meta { display: none; }
+  body.bare .row { display: block; padding: 0; border: 0; }
+  body.bare .tiles { gap: 4px; flex-direction: column; }
+  body.bare .tile { border-radius: 0; }
+  .error { color: #ff8a80; white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Голос в стекле</h1>
+    <p>«Слушаю» на прозрачном стекле Линзы: Капли и Шёлк — живьём или стоп-кадром.</p>
+  </div>
+  <div class="controls">
+    <div class="seg" data-key="moment"><span>Показ</span><div class="opts">
+      <button data-value="live">Живьём</button><button data-value="phrase">Фраза</button><button data-value="pause">Пауза</button>
+    </div></div>
+    <div class="seg" data-key="source"><span>Голос</span><div class="opts">
+      <button data-value="sim">Имитация</button><button data-value="mic">Микрофон</button>
+    </div></div>
+    <div class="seg" data-key="zoom"><span>Размер</span><div class="opts">
+      <button data-value="1">Как на экране</button><button data-value="2">×2</button>
+    </div></div>
+    <span class="note" id="mic-note"></span>
+  </div>
+</header>
+<div class="heads"><div></div><div class="cols" id="heads"></div></div>
+<main id="rows"></main>
+<script src="sketches.js"></script>
+</body>
+</html>
