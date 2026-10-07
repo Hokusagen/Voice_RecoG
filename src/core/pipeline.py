@@ -40,6 +40,9 @@ class Job:
     ask: bool = False
     """Вопрос Дарви: распознать и спросить модель, ничего не вставляя."""
 
+    recheck: bool = False
+    """Задать последний вопрос заново с поиском; звука у такой задачи нет."""
+
 
 class _Shutdown:
     """Маркер конца очереди."""
@@ -75,8 +78,17 @@ class Pipeline(QObject):
     limited = Signal(str, float)
     """Облако упёрлось в лимит: вид («minute» или «day») и секунды до сброса."""
 
+    asking = Signal(str, bool)
+    """Вопрос услышан и ушёл модели: текст вопроса и ищет ли она в интернете."""
+
     answer_delta = Signal(str)
     """Очередной кусок ответа на вопрос, пока модель его пишет: для карточки."""
+
+    answer_failed = Signal(str)
+    """Ответа не будет: причина. Карточке — убрать «ищу» и вернуть прежнее."""
+
+    sources = Signal(list)
+    """Источники готового ответа, если модель искала."""
 
     answered = Signal(str, str)
     """Вопрос и полный ответ на него."""
@@ -262,6 +274,9 @@ class Pipeline(QObject):
     # ---------- обработка одной фразы ----------
 
     def _process(self, job: Job) -> None:
+        if job.recheck:
+            self._process_recheck(job)
+            return
         if job.ask:
             self._process_ask(job)
             return
@@ -380,19 +395,51 @@ class Pipeline(QObject):
         record.app = active_app()
 
         self._emit(Stage.POLISHING, "Думаю", self._asker.cfg.model)
+        self.asking.emit(question, self._asker.cfg.web_search)
         asked = time.monotonic()
         try:
             answer = self._asker.ask(question, conversation, self.answer_delta.emit)
         except AskFailed as exc:
             record.error = str(exc)
             self._close(record, started)
+            self.answer_failed.emit(str(exc))
             self._emit(Stage.ERROR, "Не ответил", str(exc))
             self._sounds.play("error")
             return
         finally:
             if self._cloud is not None:
                 self.quota.emit(self._cloud.quota_line())
+        self._finish_answer(record, answer, question, started, asked)
 
+    def _process_recheck(self, job: Job) -> None:
+        """«Проверить в интернете»: последний вопрос заново, с поиском."""
+        if self._asker is None:
+            return
+        started = time.monotonic()
+        record = AskRecord(hotkey=job.hotkey, app=active_app())
+        conversation = self._asker._current
+        if conversation is not None and conversation.turns:
+            record.conversation = conversation.id
+            record.turn = len(conversation.turns)
+            record.question = conversation.turns[-1].question
+            self.asking.emit(record.question, True)
+        self._emit(Stage.POLISHING, "Ищу", self._asker.cfg.model)
+        try:
+            _, question, answer = self._asker.recheck(self.answer_delta.emit)
+        except AskFailed as exc:
+            record.error = str(exc)
+            self._close(record, started)
+            self.answer_failed.emit(str(exc))
+            self._emit(Stage.ERROR, "Не проверил", str(exc))
+            self._sounds.play("error")
+            return
+        finally:
+            if self._cloud is not None:
+                self.quota.emit(self._cloud.quota_line())
+        self._finish_answer(record, answer, question, started, started)
+
+    def _finish_answer(self, record: AskRecord, answer, question: str, started: float, asked: float) -> None:
+        """Общий хвост вопроса и перепроверки: журнал, лог, сигналы, «Готово»."""
         record.answer_s = round(time.monotonic() - asked, 2)
         record.model, record.effort, record.answer = answer.model, answer.effort, answer.text
         record.truncated = answer.truncated
@@ -410,9 +457,10 @@ class Pipeline(QObject):
             + f":\n{answer.text}\n"
         )
         self.answered.emit(question, answer.text)
+        self.sources.emit(answer.sources)
         self._sounds.play("success")
-        # inserted: итог ушёл не на плашку — пока в журнал, потом в карточку, —
-        # поэтому плашка, как после диктовки, показывает одну галочку.
+        # inserted: итог ушёл не на плашку, а в карточку ответа, поэтому
+        # плашка, как после диктовки, показывает одну галочку.
         self._emit(Stage.DONE, "Ответил", inserted=True)
 
     def _transcribe(self, audio: np.ndarray, record: Record | AskRecord, prompt: str | None = None) -> str:

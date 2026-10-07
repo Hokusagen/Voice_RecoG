@@ -161,7 +161,9 @@ class Asker:
         question: str,
         conversation: Conversation,
         on_delta: Callable[[str], None] | None = None,
+        search: bool | None = None,
     ) -> Answer:
+        """search — искать ли в интернете; None — как в настройках (ask.web_search)."""
         messages = self.messages(question, conversation)
 
         def ask(search: bool) -> Answer:
@@ -169,21 +171,41 @@ class Asker:
                 messages, self.cfg.model, self.cfg.reasoning_effort, self.cfg.max_tokens, on_delta, search,
             )
 
+        wanted = self.cfg.web_search if search is None else search
         try:
-            answer = ask(self.cfg.web_search)
+            answer = ask(wanted)
         except AskFailed as exc:
             # Лучше ответ без поиска, чем никакого. Поиск съедает тысячи токенов
             # на вопрос, и лимит кончается у него первым; а при обязательном
             # поиске модель иной раз отказывается искать — «Tool choice is
             # required, but model did not call a tool» шесть раз подряд на одном
-            # вопросе 7.10. Сбой сети повтор без поиска не вылечит.
-            if not self.cfg.web_search or not ("лимит" in str(exc) or "tool" in str(exc).lower()):
+            # вопросе 7.10. Сбой сети повтор без поиска не вылечит. Если искать
+            # попросил сам человек, ответ без поиска ему не нужен — он уже есть.
+            failed_search = "лимит" in str(exc) or "tool" in str(exc).lower()
+            if not wanted or search is not None or not failed_search:
                 raise
             print(f"[ask] {exc}; отвечаю без поиска")
             answer = ask(False)
         conversation.turns.append(Turn(question, answer.text))
         conversation.last_at = time.monotonic()
         return answer
+
+    def recheck(self, on_delta: Callable[[str], None] | None = None) -> tuple[Conversation, str, Answer]:
+        """Задаёт последний вопрос заново, но с поиском, — «Проверить в интернете».
+
+        Ответ заменяет прежний в разговоре: уточнение дальше должно опираться
+        на проверенное, а не на то, что модель вспомнила сама.
+        """
+        conversation = self._current
+        if conversation is None or not conversation.turns:
+            raise AskFailed("перепроверять нечего: разговор закончен")
+        turn = conversation.turns.pop()
+        try:
+            answer = self.ask(turn.question, conversation, on_delta, search=True)
+        except AskFailed:
+            conversation.turns.append(turn)
+            raise
+        return conversation, turn.question, answer
 
     def keep_audio(self, audio: np.ndarray, sample_rate: int, name: str) -> str:
         """Сохраняет запись вопроса; возвращает имя файла или пусто.
