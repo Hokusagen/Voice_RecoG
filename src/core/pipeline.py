@@ -396,6 +396,7 @@ class Pipeline(QObject):
         record.answer_s = round(time.monotonic() - asked, 2)
         record.model, record.effort, record.answer = answer.model, answer.effort, answer.text
         record.truncated = answer.truncated
+        record.searched, record.sources = answer.searched, answer.sources
         record.first_s = round(answer.first_s, 2)
         record.prompt_tokens = answer.prompt_tokens
         record.completion_tokens = answer.completion_tokens
@@ -405,6 +406,7 @@ class Pipeline(QObject):
             f"[ask] ответ {answer.model} · {answer.effort or '-'} за {record.answer_s:.1f} с "
             f"(первое слово {record.first_s:.1f} с, раздумья {answer.reasoning_tokens} ток.)"
             + (" · ОБОРВАН по max_tokens" if answer.truncated else "")
+            + (f" · искал: {', '.join(answer.sources)}" if answer.searched else " · без поиска")
             + f":\n{answer.text}\n"
         )
         self.answered.emit(question, answer.text)

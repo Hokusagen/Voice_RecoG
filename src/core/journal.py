@@ -227,6 +227,11 @@ class AskRecord:
     truncated: bool = False
     """Ответ упёрся в max_tokens и оборван."""
 
+    searched: bool = False
+    """Модель искала в интернете: без этого не разделить цену поиска и ответа."""
+
+    sources: list[str] = field(default_factory=list)
+
     first_s: float = 0.0
     """От запроса до первого слова ответа."""
 

@@ -40,6 +40,16 @@ _HINT_CHARS = 400
 #: Разметка ответа, которая Whisper ничего не подскажет, а место съест.
 _MARKUP = re.compile(r"[`*_$#>|]+")
 
+#: Ссылки встроенного поиска gpt-oss: «【2†L14-L17】». Номер — курсор браузера
+#: модели, а не порядковый номер источника, человеку он ничего не скажет.
+#: Вторая ветка — недописанная ссылка в хвосте потока.
+_CITATION = re.compile(r"\s?【[^】]*】|【[^】]*$")
+
+
+def clean_answer(text: str) -> str:
+    """Текст ответа без служебных ссылок поиска — для карточки и журнала."""
+    return _CITATION.sub("", text).strip()
+
 
 @dataclass
 class Answer:
@@ -57,6 +67,20 @@ class Answer:
     reasoning_tokens: int = 0
     truncated: bool = False
     """Упёрлись в max_tokens: ответ оборван, и это видно только здесь."""
+
+    searched: bool = False
+    """Модель искала в интернете перед ответом."""
+
+    opened: list[str] = field(default_factory=list)
+    """Страницы, которые модель открыла и прочла."""
+
+    found: list[str] = field(default_factory=list)
+    """Выдача поиска: из неё модель отвечает, если ничего не открывала."""
+
+    @property
+    def sources(self) -> list[str]:
+        """Источники для карточки и журнала: прочитанное, а без него — верх выдачи."""
+        return self.opened or self.found[:3]
 
 
 class AskFailed(RuntimeError):
@@ -119,7 +143,13 @@ class Asker:
         return text[:_HINT_CHARS].rsplit(" ", 1)[0]
 
     def messages(self, question: str, conversation: Conversation) -> list[dict]:
-        messages = [{"role": "system", "content": self.cfg.system_prompt}]
+        system = self.cfg.system_prompt
+        if self.cfg.about.strip():
+            system += (
+                f"- О человеке: {self.cfg.about.strip()}. Если ответ про код и настройки — "
+                "давай их для этих версий, не упоминая их без нужды.\n"
+            )
+        messages = [{"role": "system", "content": system}]
         for turn in conversation.turns[-self.cfg.history_turns:]:
             messages.append({"role": "user", "content": turn.question})
             messages.append({"role": "assistant", "content": turn.answer})
@@ -132,13 +162,25 @@ class Asker:
         conversation: Conversation,
         on_delta: Callable[[str], None] | None = None,
     ) -> Answer:
-        answer = self._cloud.ask(
-            self.messages(question, conversation),
-            self.cfg.model,
-            self.cfg.reasoning_effort,
-            self.cfg.max_tokens,
-            on_delta,
-        )
+        messages = self.messages(question, conversation)
+
+        def ask(search: bool) -> Answer:
+            return self._cloud.ask(
+                messages, self.cfg.model, self.cfg.reasoning_effort, self.cfg.max_tokens, on_delta, search,
+            )
+
+        try:
+            answer = ask(self.cfg.web_search)
+        except AskFailed as exc:
+            # Лучше ответ без поиска, чем никакого. Поиск съедает тысячи токенов
+            # на вопрос, и лимит кончается у него первым; а при обязательном
+            # поиске модель иной раз отказывается искать — «Tool choice is
+            # required, but model did not call a tool» шесть раз подряд на одном
+            # вопросе 7.10. Сбой сети повтор без поиска не вылечит.
+            if not self.cfg.web_search or not ("лимит" in str(exc) or "tool" in str(exc).lower()):
+                raise
+            print(f"[ask] {exc}; отвечаю без поиска")
+            answer = ask(False)
         conversation.turns.append(Turn(question, answer.text))
         conversation.last_at = time.monotonic()
         return answer

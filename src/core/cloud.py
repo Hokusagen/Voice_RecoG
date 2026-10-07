@@ -29,7 +29,7 @@ import numpy as np
 import requests
 
 from config import AskConfig, CloudConfig, LLMConfig
-from core.ask import Answer, AskFailed
+from core.ask import Answer, AskFailed, clean_answer
 from core.audio import to_wav
 from core.llm import LLMUnavailable, Polished, _looks_sane, _sanitize
 
@@ -480,12 +480,18 @@ class CloudClient:
         effort: str,
         max_tokens: int,
         on_delta: Callable[[str], None] | None = None,
+        search: bool = False,
     ) -> Answer:
         """Ответ на вопрос потоком: on_delta получает текст по мере генерации.
 
         Поток нужен не ради эффекта: рассуждающая модель отвечает секундами, и
         карточка должна заполняться, а не ждать конца. Раздумья модели (поле
         reasoning у gpt-oss) не показываем, только считаем.
+
+        search — встроенный поиск gpt-oss у Groq, обязательный: по своей воле
+        модель им почти не пользуется (6.10 не стала искать даже API Godot и
+        выдала код третьей версии). В on_delta текст идёт как есть, со ссылками
+        вида 【2†L14-L17】; чистит их clean_answer.
         """
 
         def build(server: _Server) -> dict:
@@ -500,6 +506,9 @@ class CloudClient:
             }
             if effort:
                 payload["reasoning_effort"] = effort
+            if search:
+                payload["tools"] = [{"type": "browser_search"}]
+                payload["tool_choice"] = "required"
             return {"json": payload, "stream": True}
 
         started = time.monotonic()
@@ -520,7 +529,7 @@ class CloudClient:
                 self.last_error = "облако оборвало ответ: " + _describe(exc)
                 raise AskFailed(self.last_error) from exc
 
-        answer.text = answer.text.strip()
+        answer.text = clean_answer(answer.text)
         answer.took_s = time.monotonic() - started
         if not answer.text:
             # Пустой ответ с обрывом — это не сбой облака: рассуждающая модель
@@ -636,6 +645,8 @@ def _read_stream(
         for choice in chunk.get("choices") or []:
             if choice.get("finish_reason") == "length":
                 answer.truncated = True
+            for tool in (choice.get("delta") or {}).get("executed_tools") or []:
+                _note_source(answer, tool)
             piece = (choice.get("delta") or {}).get("content")
             if not piece:
                 continue
@@ -644,6 +655,37 @@ def _read_stream(
             answer.text += piece
             if on_delta is not None:
                 on_delta(piece)
+
+
+#: Адрес страницы в выводе инструмента браузера: «L1: URL: https://…».
+_TOOL_URL = re.compile(r"URL:\s*(https?://\S+)")
+
+
+def _note_source(answer: Answer, tool: dict) -> None:
+    """Запоминает, что модель нашла или открыла.
+
+    Каждый шаг браузера приходит в потоке дважды: сначала аргументы, потом
+    вывод. Открытые страницы — то, что модель прочла, они идут в источники
+    первыми; выдачу поиска держим про запас — на случай, если модель
+    ответила по сниппетам и ничего не открывала.
+    """
+    if "output" not in tool:
+        return
+    answer.searched = True
+    name = tool.get("name", "")
+    found = tool.get("search_results")
+    results = found.get("results") if isinstance(found, dict) else None
+    urls = [r.get("url", "") for r in results or [] if isinstance(r, dict)]
+    if name == "browser.open":
+        match = _TOOL_URL.search(tool.get("output") or "")
+        opened = urls[:1] or ([match.group(1)] if match else [])
+        for url in opened:
+            if url and url not in answer.opened:
+                answer.opened.append(url)
+    elif name == "browser.search":
+        for url in urls:
+            if url and url not in answer.found:
+                answer.found.append(url)
 
 
 def _hopeless(response: requests.Response, on_limit: bool) -> bool:
