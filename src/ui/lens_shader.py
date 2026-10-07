@@ -2,7 +2,8 @@
 
 Перенос лаборатории design/glass без изменения чисел: материал Линзы
 (harness.js → liquidGlass), обход света по событию (lens.js), цвет итогов
-(kit.js → statusRim, из «Сияния»), лепестки думающего диска (island.js).
+(kit.js → statusRim, из «Сияния»), лепестки думающего диска (island.js),
+голос «Шёлк» в «Слушаю» (voice/sketches.js).
 Расстояния в лаборатории — в CSS px капсулы 56; здесь всё умножается на
 uView.w — физических пикселей на пиксель макета.
 
@@ -33,9 +34,7 @@ cbuffer Params : register(b0) {
     float4 uDetailDark; float4 uDetailLight;
     float4 uMorph;     // x — сила лепестков, y — глубина A, z — глубина B, w — прогресс A→B
     float4 uMorphN;    // x — лепестков A, y — лепестков B, z — поворот
-    float4 uVoice;     // x — видимость, y — фраза, z — слог, w — фаза течения
-    float4 uWaveH[36]; // смещения пластов прилива: 3 × 48 узлов подряд (ui.tide)
-    float4 uWaveV[36]; // их скорости
+    float4 uVoice;     // x — видимость, y — фраза 0…1, z — слог, w — фаза течения дыма
 };
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
@@ -147,91 +146,71 @@ float3 statusRim(float3 col, float2 p, float inside, float S) {
     return lerp(col, lc, a * lerp(lerp(0.72, 0.9, light), 0.58, dark)) + lc * a * 0.34 * dark;
 }
 
-// ---------- голос ----------
+// ---------- голос: Шёлк ----------
 
-// Палитра голоса Siri iOS 27: синий → фиолетовый → розовый и обратно в синий.
-float3 voicePal(float x) {
-    const float3 B = float3(0.247, 0.635, 1.000);
-    const float3 V = float3(0.557, 0.424, 1.000);
-    const float3 P = float3(1.000, 0.310, 0.639);
-    float y = frac(x / 3.0) * 3.0;
-    float f = smoothstep(0.0, 1.0, frac(y));
-    if (y < 1.0) return lerp(B, V, f);
-    if (y < 2.0) return lerp(V, P, f);
-    return lerp(P, B, f);
-}
+// Шёлк по мотивам LiveKit Aura — перенос design/glass/voice: 24 нити — одна и та
+// же линия, искажённая синусами со своей фазой; вместе они вьются, как дым.
+// Волны бегут вдоль капсулы (минус у фазы по x). Фраза густит дым и раскручивает
+// нити, слог трогает только яркость. Координаты — px макета от центра пилюли.
+static const float SILK_SEED = 0.6;
+static const float SILK_GAIN = 1.4;
 
-// Цвет поверх стекла без знания фона: над светлым — подмес (иначе свечение
-// только белит), над тёмным — меньше подмеса и сложение, свет из стекла.
-float4 voiceLight(float3 c, float a, float tone) {
-    float aOver = a * lerp(0.55, 0.82, tone);
-    float add = a * 0.38 * (1.0 - tone);
-    return float4(c * (aOver + add), aOver);
-}
+struct Silk { float d; float t; float body; };
 
-// Пласты прилива считает ui.tide: связанные струны в канале пилюли. Здесь — только
-// выборка смещения и скорости по длине с гладкой интерполяцией между узлами.
-float waveNode(int i) { return uWaveH[i >> 2][i & 3]; }
-float waveSpeedNode(int i) { return uWaveV[i >> 2][i & 3]; }
-float waveAt(int layer, float u, out float speed) {
-    float fi = saturate(u) * 47.0;
-    int i0 = (int)floor(fi);
-    int i1 = min(i0 + 1, 47);
-    float f = fi - (float)i0;
-    f = f * f * (3.0 - 2.0 * f);
-    int base = layer * 48;
-    speed = lerp(waveSpeedNode(base + i0), waveSpeedNode(base + i1), f);
-    return lerp(waveNode(base + i0), waveNode(base + i1), f);
-}
-
-// «Прилив» (Siri iOS 27 + Gemini Live): снизу капсулы три ленты света — синяя,
-// фиолетовая, розовая. Формы независимы и неровны: у каждой своя струна голоса
-// (ui.tide), своя шумовая поверхность, своя толщина и волокна. Связь между ними —
-// светом и цветом: над тёмным фоном свет лент складывается, и где они
-// пересекаются, оттенки смешиваются и уходят к белому; над светлым ленты — цветные
-// фильтры, и в пересечениях цвета перемножаются в густые смешанные тона.
-// Уровень и плотность ведёт фраза: в паузе ленты оседают тонкими и бледными.
-float4 voiceTide(float2 p, float S, float cover, float tone) {
-    float ph = uVoice.y, fl = uVoice.w;
-    float t = uView.z;
-    float w = uPill.z, h = uPill.w;
-    float u = (p.x - (uPill.x - 0.5 * w)) / max(w, 1.0);
-    float depth = (uPill.y + 0.5 * h - p.y) / h;
-    float px = h / S;
-    float3 light = 0.0;
-    float3 trans = 1.0;
-    [unroll] for (int k = 0; k < 3; k++) {
-        float fk = (float)k;
-        float sp;
-        float d = waveAt(k, u, sp);
-        float energy = saturate(abs(sp) * 0.3);
-        float dir = k == 1 ? -1.0 : 1.0;
-        // Неровная поверхность: шум вдоль канала, у каждой ленты свой масштаб и дрейф.
-        float n = fbm(float2(u * (3.0 + 2.5 * fk) + dir * t * (0.12 + 0.1 * fk + 0.25 * ph), fk * 7.3 + t * 0.05)) - 0.5;
-        float level = 0.12 + 0.05 * fk + (0.30 - 0.05 * fk) * ph;
-        float surf = level + (0.12 + 0.16 * ph) * 1.8 * n + 0.22 * (0.5 + 0.5 * ph) * tanh(d);
-        // Лента, а не заливка до дна: толщина гуляет вдоль канала.
-        float th = (0.08 + 0.16 * ph) * (0.5 + fbm(float2(u * 5.0 - dir * t * 0.2, fk * 3.1 + 11.0)));
-        float dist = (abs(depth - (surf - 0.5 * th)) - 0.5 * th) * px;
-        float D = 1.0 - smoothstep(-2.0, 2.5 + 2.0 * ph, dist);
-        // Верхний край ленты подсвечен; внутри — волокна, как у шёлка.
-        float edge = exp(-abs((depth - surf) * px) / 1.8);
-        float fib = 0.65 + 0.35 * fbm(float2(u * 34.0 + dir * t * 0.6, depth * 9.0 + fk * 5.0));
-        D = saturate(D * fib * (0.35 + 0.55 * ph + 0.25 * energy) + edge * (0.12 + 0.3 * energy + 0.2 * ph));
-        float3 C = voicePal(fk + 0.6 * n + fl * 0.2 + u * 0.4);
-        light += C * D;
-        trans *= 1.0 - D * (1.0 - C) * 0.85;
+Silk silkField(float2 q, float hh, float hw, float ph, float flow, float level) {
+    float L = (hw - hh * 0.6) / hh;
+    float2 base = q / hh;
+    // Нити держатся у оси: сердцевина яркая и плотная, по краям — волокна дыма.
+    float amp = lerp(0.07, 0.28, ph);
+    float acc = 0.0, accT = 0.0, wide = 0.0;
+    [loop] for (int i = 0; i < 24; i++) {
+        float fi = (float)i / 24.0;
+        float2 pp = base;
+        float fr = 1.7, a = amp;
+        [unroll] for (int j = 0; j < 3; j++) {
+            float fj = (float)j;
+            pp += a * float2(sin(pp.y * fr * 1.3 + fi * 2.4 + SILK_SEED + fj * 1.7 + flow * (0.6 + 0.5 * fj)),
+                             sin(pp.x * fr + fi * 3.1 + SILK_SEED * 1.3 + fj * 2.3 - flow * (1.0 + 0.6 * fj)));
+            fr *= 1.7;
+            a *= 0.6;
+        }
+        float d = length(pp - float2(clamp(pp.x, -L, L), 0.0));
+        // Волокно — плотная сердцевина в пару пикселей и слабый ореол вокруг.
+        float w = exp(-pow(d / 0.12, 1.4)) + 0.12 / (1.0 + d * d / 0.09);
+        acc += w;
+        accT += w * fi;
+        wide += 1.0 / (1.0 + d * d / 0.2);
     }
-    float on = uVoice.x * cover;
-    // Тёмный фон: свет складывается и насыщается к белому там, где ленты сходятся.
-    // rgb больше альфы в предумноженном слое — это сложение поверх живой середины.
-    float3 lit = 1.0 - exp(-light * 1.3);
-    float4 darkLayer = float4(lit, 0.35 * max(lit.r, max(lit.g, lit.b)));
-    // Светлый фон: умножение на пропускание лент, выраженное как «поверх белого».
-    float a = saturate(1.0 - min(trans.r, min(trans.g, trans.b)));
-    float3 c = a > 1e-3 ? saturate((trans - (1.0 - a)) / a) : 0.0;
-    float4 lightLayer = float4(c * a, a);
-    return lerp(darkLayer, lightLayer, tone) * on;
+    float ends = 1.0 - smoothstep(L - 1.0, L + 0.6, abs(base.x));
+    Silk s;
+    s.t = accT / max(acc, 1e-4);
+    // Нити складываются, а не усредняются: где они сходятся, свет густеет.
+    s.d = 1.0 - exp(-acc * 0.13 * SILK_GAIN * ends * lerp(0.5, 1.0, ph) * (0.88 + 0.24 * level));
+    s.body = (1.0 - exp(-wide * 0.07 * ends)) * lerp(0.5, 1.0, ph);
+    return s;
+}
+
+// Шёлк слоем с предумноженной альфой поверх стекла. На тёмном он светится:
+// свет складывается с фоном, сердцевина уходит в белое. На светлом светить
+// нечем — там полупрозрачные волокна густого цвета и чуть светлее ось. Под
+// нитями — собственное тело дыма, полупрозрачная сине-фиолетовая подложка: на
+// ней ось читается как свет, а стекло вокруг остаётся чистым.
+float4 voiceSilk(float2 p, float S, float tone) {
+    float ph = uVoice.y;
+    Silk s = silkField((p - uPill.xy) / S, uPill.w / S * 0.5, uPill.z / S * 0.5, ph, uVoice.w, uVoice.z);
+    float3 bodyInk = lerp(float3(0.16, 0.38, 0.92), float3(0.42, 0.28, 0.90), s.t);
+    float bodyA = s.body * lerp(0.12, 0.08, tone);
+    float4 body = float4(bodyInk * bodyA, bodyA);
+    float3 glow = lerp(float3(0.10, 0.84, 1.0), float3(0.58, 0.42, 1.0), s.t);
+    float3 e = lerp(glow, 1.0, smoothstep(0.7, 1.0, s.d) * 0.5) * s.d;
+    // Сложение света (screen) одной альфой по каналам не выразить: слой даёт
+    // e + (1 − ā)·фон, где ā — среднее e; rgb больше альфы — это и есть сложение.
+    float4 darkLayer = float4(e, (e.r + e.g + e.b) / 3.0);
+    float3 ink = lerp(float3(0.0, 0.58, 1.0), float3(0.50, 0.30, 1.0), s.t);
+    ink = lerp(ink, float3(0.74, 0.95, 1.0), smoothstep(0.84, 1.0, s.d) * 0.3);
+    float la = pow(max(s.d, 0.0), 1.6) * 0.7;
+    float4 lightLayer = float4(ink * la, la);
+    return over(lerp(darkLayer, lightLayer, tone), body);
 }
 
 // ---------- значки: расстояния в долях рамки значка ----------
@@ -304,6 +283,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     float sd = shape(p - float2(0.0, 8.0 * S));
     float shadow = uTone.w * m * 0.035 * exp(-max(sd, 0.0) / (30.0 * S)) * smoothstep(-30.0 * S, 0.0, sd);
     float4 result = float4(0.0, 0.0, 0.0, shadow * (1.0 - cover));
+    float2 voiceP = p;
 
     if (cover > 0.0 && m > 0.001) {
         float inside = max(-dist, 0.0);
@@ -313,6 +293,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         // Выборка у кромки идёт внутрь: A > h, кромка показывает перевёрнутый фон.
         float d = uGlass.y * m * (1.0 - sqrt(max(1.0 - t * t, 0.0)));
         float3 col = sceneBlur(p - nl * d, uTone.z * m);
+        // Голос у кромки чуть ломается вместе со стеклом, но слабее фона: при полном
+        // смещении кромка отражала нити «стеблями» до самого края.
+        voiceP = p - nl * d * 0.3;
         col = col * lerp(1.0, 1.015, m) + 0.086 * m;
         col = lerp(col, float3(1.0, 0.34, 0.38), uTone.x * m);
 
@@ -358,7 +341,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
     // ---------- голос: поверх стекла, под значком и подписью ----------
     if (uVoice.x > 0.003 && cover > 0.0) {
-        result = over(voiceTide(p, S, cover, tone), result);
+        // У самой кромки голос гаснет: блик и тёмная кромка остаются поверх него.
+        float keep = smoothstep(0.6 * S, 2.2 * S, max(-dist, 0.0));
+        result = over(voiceSilk(voiceP, S, tone) * (uVoice.x * cover * keep), result);
     }
 
     // ---------- значок ----------

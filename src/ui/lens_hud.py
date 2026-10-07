@@ -48,7 +48,6 @@ from ui.gpu import Gpu
 from ui.lens_shader import HLSL
 from ui.live import _GdiGrabber
 from ui.motion import Spring, clamp01, ease_in_out, ease_out_cubic, smooth
-from ui.tide import LAYERS, NODES, Tide
 
 # ---------- макет, px при 100% ----------
 
@@ -78,9 +77,11 @@ INSERTED_HOLD_MS = 2200
 LABEL_PAD = 8
 
 #: Голос (design/glass/RESEARCH.md → «Голос»): громкость в окне дБ с гаммой 0.7.
-#: Слог — атака 70 мс, спад 280 мс; фраза поверх слога — 250 мс и 0.9 с. Форму
-#: ведёт фраза: на каждом слоге плашка не дёргается, а «говорю / молчу» видно сразу.
+#: Слог — атака 70 мс, спад 280 мс; фраза поверх слога — атака 180 мс, спад
+#: 0.75 с. Форму ведёт фраза: на каждом слоге плашка не дёргается, а «говорю /
+#: молчу» видно сразу. Те же числа — в лаборатории, design/glass/voice.
 VOICE_DB = (-56.0, -6.0)
+PHRASE_ATTACK, PHRASE_DECAY = 0.18, 0.75
 
 #: Думающий диск (island.js): лепестки по кругу и их глубина в долях радиуса.
 LOBES = (5, 7, 4)
@@ -148,8 +149,7 @@ class _Params(Structure):
     _fields_ = [(name, c_float * 4) for name in (
         "view", "pill", "glass", "light", "status", "tone", "label", "label_fx", "icon", "icon_fx",
         "icon_dark", "icon_light", "title_dark", "title_light", "detail_dark", "detail_light",
-        "morph", "morph_n", "voice")] + [
-        ("wave_h", c_float * (LAYERS * NODES)), ("wave_v", c_float * (LAYERS * NODES))]
+        "morph", "morph_n", "voice")]
 
 
 # ---------- движение ----------
@@ -188,22 +188,23 @@ class _Motion:
         self.syllable = 0.0
         self.phrase = 0.0
         self.flow = 0.0
-        self.tide = Tide()
 
     def voice(self, dt: float, level: float, listening: bool) -> tuple[float, float, float, float]:
-        """Огибающие голоса: (видимость, фраза, слог, накопленная фаза течения)."""
+        """Огибающие голоса: (видимость, фраза 0…1, слог, накопленная фаза течения дыма)."""
         x = 0.0
         if listening and level > 1e-6:
             db = 20.0 * math.log10(level)
             x = clamp01((db - VOICE_DB[0]) / (VOICE_DB[1] - VOICE_DB[0])) ** 0.7
         a = 1.0 - math.exp(-dt / (0.07 if x > self.syllable else 0.28))
         self.syllable += (x - self.syllable) * a
-        a = 1.0 - math.exp(-dt / (0.25 if self.syllable > self.phrase else 0.9))
+        a = 1.0 - math.exp(-dt / (PHRASE_ATTACK if self.syllable > self.phrase else PHRASE_DECAY))
         self.phrase += (self.syllable - self.phrase) * a
-        # Течение быстрее, пока говорят, — состояние темпом, а не новым цветом.
-        self.flow += dt * (0.05 + 0.2 * self.phrase)
+        # Речь держит огибающую около 0.7–0.85: в шкале эскизов середина фразы — 1.
+        phrase = clamp01((self.phrase - 0.05) / 0.75)
+        # Дым течёт всегда, фраза его подгоняет: в паузе он почти стоит.
+        self.flow += dt * (0.3 + 1.8 * phrase)
         on = self.voice_on.set(1.0 if listening else 0.0).step(dt)
-        return clamp01(on), self.phrase, self.syllable, self.flow
+        return clamp01(on), phrase, self.syllable, self.flow
 
     def step(self, dt: float, now: float, tgt: _Target, light_bg: bool, applied_key, frame: int,
              view: tuple[int, int], S: float, params: _Params, level: float = 0.0) -> tuple[_Geometry, bool]:
@@ -376,12 +377,6 @@ class _Motion:
         on, phrase, syllable, flow = self.voice(dt, level, shown and tgt.stage is Stage.LISTENING)
         # Голос проступает вместе со стеклом и тает раньше него.
         p.voice[:] = (on * smooth(0.8, 0.97, mc), phrase, syllable, flow)
-        if on > 0.001:
-            self.tide.step(dt, phrase, syllable)
-            ctypes.memmove(p.wave_h, self.tide.heights().ctypes.data, LAYERS * NODES * 4)
-            ctypes.memmove(p.wave_v, self.tide.speeds().ctypes.data, LAYERS * NODES * 4)
-        else:
-            self.tide.reset()
 
         vanished = not shown and mc < 0.003 and self.label_opacity < 0.003
         return geometry, vanished
