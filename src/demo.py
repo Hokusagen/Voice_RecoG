@@ -236,16 +236,18 @@ CARD_SOURCES = [
 def card_demo(cfg: Config) -> dict:
     """Вопрос, уточнение, перепроверка: плашка и карточка без облака и микрофона.
 
-    Кнопки карточки живые: «Проверить в интернете» прогоняет перепроверку,
-    «Вставить» печатает текст в терминал, крестик начинает разговор заново.
-    Свободный край тянется, и ширина, как в приложении, пишется в настройки.
+    Уточнение встаёт в ленту под первым ответом, как в приложении. Кнопки
+    карточки живые: «Проверить в интернете» прогоняет перепроверку последнего
+    хода, «Вставить» печатает текст в терминал, крестик начинает разговор
+    заново. Свободный край тянется, и ширина, как в приложении, пишется в
+    настройки.
     """
     from ui.card import AnswerCard
 
     hud = hud_module.create(cfg.ui)
     card = AnswerCard(cfg.ui)
     voice = FakeVoice()
-    state = {"since": 0.0, "turn": 0, "next": None, "pieces": [], "sources": [], "epoch": 0}
+    state = {"since": 0.0, "turn": 0, "next": None, "pieces": [], "sources": [], "epoch": 0, "talk": 1}
     hud.set_telemetry(lambda: (voice.level(), state["since"]))
 
     clock = QTimer(card)
@@ -301,7 +303,7 @@ def card_demo(cfg: Config) -> dict:
 
         def thinking() -> None:
             hud.show_status(Status(Stage.POLISHING, "Думаю", cfg.ask.model))
-            card.start(question, False)
+            card.start(f"demo-{state['talk']}", index + 1, question, False)
 
         later(2400, heard)
         later(3000, thinking)
@@ -317,12 +319,13 @@ def card_demo(cfg: Config) -> dict:
         interrupt()
         question, _ = CARD_TALK[state["turn"]]
         print(f"  проверяю в интернете: {question}")
-        card.start(question, True)
+        card.start(f"demo-{state['talk']}", state["turn"] + 1, question, True)
         hud.show_status(Status(Stage.POLISHING, "Ищу", cfg.ask.model))
         later(3200, lambda: play(CARD_RECHECK, CARD_SOURCES))
 
     def closed() -> None:
         interrupt()
+        state["talk"] += 1
         print("  карточка закрыта — разговор заново\n")
         later(2500, lambda: ask(0))
 

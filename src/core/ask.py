@@ -5,9 +5,10 @@
 клавиша: догадываться, вопрос это к Дарви или вопрос, надиктованный в чат, мы не
 беремся — ошибка в ту сторону стоит вставленного текста.
 
-Разговор живёт, пока на него отвечают: вопрос, заданный в пределах
-ask.followup_s после ответа, — уточнение в том же разговоре, позже — новый
-разговор. Когда появится карточка, границей станет её закрытие.
+Разговор живёт, пока открыта карточка с ним: вопрос при открытой карточке —
+уточнение, сколько бы ни прошло после ответа, а крестик разговор заканчивает.
+Если карточку убрала начатая диктовка, уточнением считается вопрос в пределах
+ask.followup_s после ответа, позже — новый разговор.
 
 Ответы — только облаком. Какой сервер и какая модель, решает замер
 (src/ask_eval.py), поэтому здесь нет ничего, привязанного к Groq.
@@ -115,10 +116,15 @@ class Asker:
     def configured(self) -> bool:
         return self._cloud.can_ask
 
-    def conversation(self) -> Conversation:
-        """Текущий разговор, если уточнение пришло вовремя, иначе новый."""
+    def conversation(self, keep: bool = False) -> Conversation:
+        """Текущий разговор, если вопрос его продолжает, иначе новый.
+
+        keep — карточка с разговором открыта: продолжаем его, сколько бы ни
+        прошло после ответа. Без неё уточнение — только в пределах followup_s.
+        """
         current = self._current
-        if current is None or not current.turns or time.monotonic() - current.last_at > self.cfg.followup_s:
+        stale = current is not None and time.monotonic() - current.last_at > self.cfg.followup_s
+        if current is None or not current.turns or (stale and not keep):
             current = self._current = Conversation()
         return current
 

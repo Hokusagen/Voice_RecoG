@@ -225,7 +225,8 @@ class Controller(QObject):
         self._action = action
         if action != "ask":
             # Диктовка — значит, человек вернулся к работе. Разговор при этом
-            # не кончается: уточнение в пределах ask.followup_s его продолжит.
+            # не кончается: уточнение в пределах ask.followup_s его продолжит
+            # и вернёт карточку со всей лентой.
             self.card.dismiss()
         self.sounds.play("start")
         hint = "отпустите клавишу, когда закончите"
@@ -270,6 +271,7 @@ class Controller(QObject):
                 style=self._style_for(action),
                 hotkey=getattr(self.cfg.hotkeys, action),
                 ask=action == "ask",
+                followup=action == "ask" and self.card.is_open(),
             )
         )
 

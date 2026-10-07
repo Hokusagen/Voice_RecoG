@@ -6,6 +6,11 @@
 пилюли, потому что на нём читают абзацы, а не одну строку. Движение одно:
 высота растёт пружиной вслед за текстом, который приходит потоком.
 
+В карточке весь разговор, а не последний ответ (отзыв 7.10: «хочется посмотреть,
+что там было раньше»): первый вопрос — темой в шапке, уточнения с ответами —
+ниже одной лентой. Выше потолка лента листается, и новый вопрос встаёт к
+верхнему краю, чтобы ответ читался с начала.
+
 Ширину тянут мышью за свободный край, как у обычного окна: край у угла стоит
 на месте, а ширина запоминается в ui.card_width (отзыв на живой прогон 7.10:
 карточка на полсантиметра закрывала соседний чат).
@@ -24,6 +29,7 @@ Windows пропускает к окнам под ним, так что пуст
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass, field, replace
 from urllib.parse import urlparse
 
 import numpy as np
@@ -40,6 +46,7 @@ from PySide6.QtGui import (
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
+    QTextDocumentFragment,
     QTextFormat,
     QTextFrameFormat,
 )
@@ -95,13 +102,35 @@ VEIL_DARK = QColor(22, 25, 33, 206)
 #: Courier New, а таблицу стилей документа, где стоял Consolas, не читает.
 CODE_FAMILIES = ["Consolas", "Menlo", "Courier New"]
 
+#: Метка абзацев, которые карточка вставляет в ленту сама: вопросов, распорок
+#: перед ответами и строк под ними. Их вид задан при вставке — _shape не трогает.
+_ROLE = QTextFormat.UserProperty + 1
+
+SEARCHING = "ищу в интернете…"
+
+
+@dataclass
+class _Turn:
+    """Ход разговора, как его показывает карточка."""
+
+    question: str
+    answer: str = ""
+    """Markdown ответа, как пришёл из потока."""
+
+    sources: list[str] = field(default_factory=list)
+    note: str = ""
+    """Строка под ответом вместо источников: «ищу в интернете…», «не вышло: …»."""
+
+    failed: bool = False
+    """Ответа не будет: модель его не помнит, и следующий вопрос встанет на это место."""
+
 
 class AnswerCard(QWidget):
     insert_requested = Signal(str)
-    """«Вставить»: текст ответа без разметки — в окно, где курсор."""
+    """«Вставить»: последний ответ без разметки — в окно, где курсор."""
 
     recheck_requested = Signal()
-    """«Проверить в интернете»: тот же вопрос заново с поиском."""
+    """«Проверить в интернете»: последний вопрос заново с поиском."""
 
     closed = Signal()
     """Человек закрыл карточку крестиком — разговор окончен."""
@@ -118,14 +147,29 @@ class AnswerCard(QWidget):
         self.cfg = cfg
         self._scale = max(0.75, float(cfg.hud_scale or 1.0))
 
-        self._question = ""
-        self._raw = ""
-        self._fresh = True
-        """Следующий кусок потока начинает новый ответ — прежний стираем не
-        раньше, чем придёт первое слово нового: пустая карточка хуже старой."""
+        self._conversation = ""
+        self._turns: list[_Turn] = []
+        self._pending: int | None = None
+        """Ход, ответ на который ещё идёт."""
 
-        self._done = False
-        self._sources: list[str] = []
+        self._waiting = False
+        """Первое слово ответа на _pending ещё не пришло."""
+
+        self._previous: _Turn | None = None
+        """Перепроверяемый ход, каким он был: его ответ виден до первого слова
+        нового и возвращается, если перепроверка не удалась."""
+
+        self._deferred: tuple[str, int, str, bool] | None = None
+        """Вопрос, который покажется с первым словом ответа: карточка скрыта
+        или разговор новый. Пустой карточка не нужна, а прежний разговор на
+        экране лучше нового без ответа."""
+
+        self._pin: int | None = None
+        """Ход, чей вопрос держим у верхнего края, пока человек не листал сам."""
+
+        self._anchors: list[int] = []
+        """Где в документе начинается каждый ход."""
+
         self._code_bg = QColor(0, 0, 0, 13)
         self._backdrop: QImage | None = None
         self._light = False
@@ -185,14 +229,9 @@ class AnswerCard(QWidget):
         self._text.document().setDocumentMargin(0)
         self._text.viewport().setAutoFillBackground(False)
         layout.addWidget(self._text, 1)
-
-        self._status = QLabel()
-        self._status.setWordWrap(True)
-        self._status.setFont(_sized(theme.detail_font(), 12, self._scale))
-        self._status.setOpenExternalLinks(True)
-        self._status.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
-        self._status.hide()
-        layout.addWidget(self._status)
+        bar = self._text.verticalScrollBar()
+        bar.actionTriggered.connect(self._unpin)
+        bar.rangeChanged.connect(self._hold_pin)
 
         actions = QHBoxLayout()
         actions.setSpacing(6)
@@ -230,7 +269,6 @@ class AnswerCard(QWidget):
         hover = "rgba(0,0,0,0.06)" if self._light else "rgba(255,255,255,0.08)"
         link = "#1d5fd6" if self._light else "#8ab4ff"
         self._question_label.setStyleSheet(f"color: {muted}; background: transparent;")
-        self._status.setStyleSheet(f"color: {muted}; background: transparent;")
         self._text.setStyleSheet(
             f"QTextBrowser {{ color: {text}; background: transparent; border: none; }}"
             f"QScrollBar:vertical {{ width: 6px; background: transparent; }}"
@@ -249,87 +287,129 @@ class AnswerCard(QWidget):
             f"QPushButton {{ color: {muted}; background: transparent; border: none; border-radius: 12px; }}"
             f"QPushButton:hover {{ background: {hover}; color: {text}; }}"
         )
-        self._status_link = link
+        self._muted = QColor(glass.detail)
         self._link = QColor(link)
         self._code_bg = QColor(0, 0, 0, 13) if self._light else QColor(255, 255, 255, 18)
 
     # ---------- что показывать ----------
 
-    @Slot(str, bool)
-    def start(self, question: str, searching: bool) -> None:
-        """Вопрос ушёл модели. Карточка ещё не появляется: пустой она не нужна.
+    @Slot(str, int, str, bool)
+    def start(self, conversation: str, turn: int, question: str, searching: bool) -> None:
+        """Вопрос ушёл модели. turn — номер хода с единицы; у перепроверки —
+        номер хода, который она заменит.
 
-        Видимая карточка до первого слова держит прежний ответ вместе с его
-        вопросом: подписать старый ответ новым вопросом — хуже, чем подождать.
-        Меняется только строка состояния, если модель пошла искать.
+        Открытая карточка того же разговора показывает вопрос сразу: видно, как
+        его расслышали, пока модель думает или ищет. Скрытая карточка и новый
+        разговор ждут первого слова ответа.
         """
-        self._question = question
-        self._fresh = True
-        self._recheck.setEnabled(False)
-        if searching and self.isVisible() and not self._hiding:
-            self._set_status("ищу в интернете…")
+        if conversation == self._conversation and self.is_open():
+            self._deferred = None
+            self._begin(turn - 1, question, searching)
+        else:
+            self._deferred = (conversation, turn - 1, question, searching)
 
     @Slot(str)
     def feed(self, piece: str) -> None:
         """Очередной кусок ответа из потока."""
-        if self._fresh:
-            self._fresh = False
-            self._raw = ""
-            self._done = False
-            self._sources = []
-            self._question_label.setText(self._question)
-            # Кнопки недописанному ответу не нужны: «Вставить» вставил бы обрывок.
-            self._actions.hide()
-            self._set_status("")
-            self._text.verticalScrollBar().setValue(0)
-        self._raw += piece
-        if not self.isVisible() or self._hiding:
+        if self._deferred is not None:
+            conversation, index, question, searching = self._deferred
+            self._deferred = None
+            if conversation != self._conversation:
+                self._conversation, self._turns = conversation, []
+            self._begin(index, question, searching)
+        if self._pending is None:
+            return
+        turn = self._turns[self._pending]
+        if self._waiting:
+            # Первое слово: прежний ответ перепроверяемого хода и «ищу в
+            # интернете…» уступают место новому ответу.
+            self._waiting = False
+            turn.answer, turn.sources, turn.note = "", [], ""
+        turn.answer += piece
+        if not self.is_open():
             self._appear()
-        if not self._render_timer.isActive():
+        elif not self._render_timer.isActive():
             self._render_timer.start()
 
     @Slot(list)
     def finish(self, sources: list[str]) -> None:
-        """Ответ дописан: показываем источники и кнопки."""
-        self._done = True
-        self._sources = list(sources)
-        self._recheck.setEnabled(True)
-        self._recheck.setVisible(not self._sources)
-        if self._sources:
-            shown = self._sources[:4]
-            hosts = [_domain(url) for url in shown]
-            links = " · ".join(
-                f'<a href="{url}" style="color: {self._status_link}; text-decoration: none;">'
-                f"{_source_label(url, hosts.count(host) > 1)}</a>"
-                for url, host in zip(shown, hosts)
-            )
-            self._set_status("Источники: " + links)
+        """Ответ дописан: источники под ним и кнопки."""
+        self._deferred = None
+        if self._pending is None:
+            return
+        if self._waiting and self._previous is not None:
+            # Перепроверка вернула пустой ответ — прежний лучше пустого.
+            self._turns[self._pending] = replace(self._previous, note="")
         else:
-            self._set_status("")
-        self._actions.show()
+            turn = self._turns[self._pending]
+            turn.sources, turn.note = list(sources), ""
+        self._pending, self._previous, self._waiting = None, None, False
         self._render()
 
     @Slot(str)
     def fail(self, reason: str) -> None:
-        """Ответа не будет. Видимая карточка сохраняет прежний ответ."""
-        self._fresh = False
-        self._recheck.setEnabled(True)
-        if self.isVisible():
-            self._set_status(f"не вышло: {reason}")
+        """Ответа не будет.
+
+        Скрытая карточка не появляется — ошибку покажет плашка. У открытой ход
+        получает строку «не вышло», а перепроверка возвращает прежний ответ.
+        """
+        self._deferred = None
+        note = f"не вышло: {reason}"
+        if self._pending is None:
+            # Перепроверка упала, не дойдя до вопроса, — а кнопка уже
+            # написала под ответом «ищу в интернете…».
+            if self._turns and self._turns[-1].note == SEARCHING:
+                self._turns[-1].note = note
+                self._render()
+            return
+        if self._previous is not None:
+            self._turns[self._pending] = replace(self._previous, note=note)
+        else:
+            turn = self._turns[self._pending]
+            turn.note, turn.failed = note, True
+        self._pending, self._previous, self._waiting = None, None, False
+        self._render()
 
     def dismiss(self) -> None:
         """Убрать карточку, не заканчивая разговор: человек вернулся к работе."""
-        if not self.isVisible() or self._hiding:
+        if not self.is_open():
             return
         self._grip.release()
         self._hiding = True
         self._height.set(0.0)
         self._tick.start()
 
+    def is_open(self) -> bool:
+        """Карточка на экране и не уходит: вопрос сейчас продолжит её разговор."""
+        return self.isVisible() and not self._hiding
+
+    def _begin(self, index: int, question: str, searching: bool) -> None:
+        """Ход index ждёт ответа: новый вопрос в конце ленты или перепроверка.
+
+        Ход с тем же вопросом и готовым ответом — перепроверка: ответ виден,
+        пока не придёт первое слово нового. Неудачный ход на этом месте
+        уступает его новому вопросу — модель того хода не помнит.
+        """
+        index = min(index, len(self._turns))
+        current = self._turns[index] if index < len(self._turns) else None
+        del self._turns[index:]
+        note = SEARCHING if searching else ""
+        recheck = current is not None and current.question == question and bool(current.answer) and not current.failed
+        self._previous = current if recheck else None
+        self._turns.append(replace(current, note=note) if recheck else _Turn(question, note=note))
+        self._pending, self._waiting, self._pin = index, True, index
+        if self.is_open():
+            self._render()
+
     # ---------- кнопки ----------
 
     def _plain(self) -> str:
-        return self._text.document().toPlainText().strip()
+        """Последний ответ без разметки: кнопки под лентой — для него."""
+        if not self._turns:
+            return ""
+        doc = QTextDocument()
+        doc.setMarkdown(clean_answer(self._turns[-1].answer))
+        return doc.toPlainText().strip()
 
     def _on_insert(self) -> None:
         self.insert_requested.emit(self._plain())
@@ -347,21 +427,23 @@ class AnswerCard(QWidget):
 
     def _on_recheck(self) -> None:
         self._recheck.setEnabled(False)
-        self._set_status("ищу в интернете…")
+        if self._turns:
+            # Сразу, а не когда до задачи дойдёт очередь конвейера.
+            self._turns[-1].note = SEARCHING
+            self._render()
         self.recheck_requested.emit()
 
     def _on_close(self) -> None:
+        # Разговор окончен: хвост ответа, если он ещё идёт, карточку не вернёт.
+        self._pending = self._previous = self._deferred = None
+        self._waiting = False
+        self._conversation = ""
         self.dismiss()
         self.closed.emit()
 
     def _flash(self, button: QPushButton, text: str) -> None:
         button.setText(text)
         QTimer.singleShot(1400, lambda: button.setText(button.property("label")))
-
-    def _set_status(self, html: str) -> None:
-        self._status.setText(html)
-        self._status.setVisible(bool(html))
-        self._retarget()
 
     # ---------- геометрия и движение ----------
 
@@ -387,7 +469,7 @@ class AnswerCard(QWidget):
         column = QRect(self._max_w - self._width if self._right else 0, 0, self._width, self._max_h)
         self._backdrop, self._light = _blurred(screen, QRect(x, y, self._max_w, self._max_h), column)
         self._apply_material()
-        self._question_label.setText(self._question)
+        self._render()  # цвета ленты зависят от фона под карточкой
         self._height.snap(0.0)
         self._place()
         self.show()
@@ -396,12 +478,128 @@ class AnswerCard(QWidget):
         self._tick.start()
 
     def _render(self) -> None:
+        """Лента разговора целиком: вопросы, ответы, строки под ними.
+
+        Собирается заново при каждой перерисовке: сама сборка пяти ходов —
+        меньше миллисекунды, перерисовка двух длинных ходов с раскладкой — 6 мс
+        (замер 8.10). Вырезать из документа старый хвост вместе с рамками кода
+        сложнее и хрупче.
+        """
+        self._render_timer.stop()
+        doc = self._text.document()
         bar = self._text.verticalScrollBar()
         keep = bar.value()
-        self._text.setMarkdown(clean_answer(self._raw))
-        _shape(self._text.document(), self._code_bg, self._link, int(round(8 * self._scale)))
-        bar.setValue(keep)
+        gap = int(round(8 * self._scale))
+        self._anchors = []  # до очистки: прижим не должен искать старые места
+        doc.clear()
+        cursor = QTextCursor(doc)
+        cursor.beginEditBlock()
+        for index, turn in enumerate(self._turns):
+            if index:
+                cursor.insertBlock(_block("question", top=2 * gap, bottom=gap // 2), self._small())
+                cursor.insertText(turn.question)
+                cursor.insertBlock(_block("spacer"), QTextCharFormat())
+            else:
+                cursor.setBlockFormat(_block("spacer"))
+            if turn.answer:
+                cursor.insertFragment(self._fragment(turn.answer))
+            footer = self._footer(turn)
+            if footer:
+                cursor.insertBlock(_block("footer", bottom=gap), self._small())
+                for text, href in footer:
+                    cursor.insertText(text, self._small(href))
+        # _shape — внутри той же правки: иначе каждый поправленный абзац
+        # раскладывается заново, и одна только _shape стоила 5.8 мс из 10.9.
+        _shape(doc, self._code_bg, self._link, gap)
+        cursor.endEditBlock()
+        # Начала ходов — после _shape: рамки кода сдвигают всё, что ниже них.
+        self._anchors = [0] if self._turns else []
+        block = doc.begin()
+        while block.isValid():
+            if block.blockFormat().property(_ROLE) == "question":
+                self._anchors.append(block.position())
+            block = block.next()
+        self._question_label.setText(self._turns[0].question if self._turns else "")
+        self._update_actions()
+        doc.size()  # раскладка целиком, чтобы прокрутка знала новую длину
+        if self._pin is None:
+            bar.setValue(keep)
+        else:
+            self._hold_pin()
         self._retarget()
+
+    def _fragment(self, markdown: str) -> QTextDocumentFragment:
+        """Ответ, разобранный из Markdown, — кусок для вставки в ленту.
+
+        Вставленный кусок сливает свой первый абзац с тем, куда его вставили,
+        и абзац теряет вид: заголовок становится текстом, первая строка кода —
+        строкой без подложки. Поэтому в начало куска кладётся пустой абзац —
+        сливается он, с распоркой нулевой высоты.
+        """
+        piece = QTextDocument()
+        piece.setDefaultFont(self._text.document().defaultFont())
+        piece.setMarkdown(clean_answer(markdown))
+        QTextCursor(piece).insertBlock()
+        return QTextDocumentFragment(piece)
+
+    def _footer(self, turn: _Turn) -> list[tuple[str, str]]:
+        """Строка под ответом кусками (текст, ссылка): что с ним или откуда он."""
+        if turn.note:
+            return [(turn.note, "")]
+        shown = turn.sources[:4]
+        if not shown:
+            return []
+        hosts = [_domain(url) for url in shown]
+        line = [("Источники: ", "")]
+        for index, (url, host) in enumerate(zip(shown, hosts)):
+            if index:
+                line.append((" · ", ""))
+            line.append((_source_label(url, hosts.count(host) > 1), url))
+        return line
+
+    def _small(self, href: str = "") -> QTextCharFormat:
+        """Мелкий приглушённый текст ленты: уточнения и строки под ответами."""
+        fmt = QTextCharFormat()
+        fmt.setProperty(QTextFormat.FontPixelSize, max(9, int(round(12 * self._scale))))
+        fmt.setForeground(self._link if href else self._muted)
+        if href:
+            fmt.setAnchor(True)
+            fmt.setAnchorHref(href)
+        return fmt
+
+    def _update_actions(self) -> None:
+        """Кнопки — у готового последнего ответа: к нему они и относятся.
+
+        Недописанному ответу кнопки не нужны — «Вставить» вставило бы обрывок.
+        Перепроверяемый ответ до первого слова нового цел, и кнопки при нём
+        остаются, чтобы карточка не прыгала.
+        """
+        last = self._turns[-1] if self._turns else None
+        rechecking = self._waiting and self._previous is not None
+        ready = last is not None and bool(last.answer.strip()) and not last.failed
+        ready = ready and (self._pending is None or rechecking)
+        self._actions.setVisible(ready)
+        if ready:
+            self._recheck.setVisible(not last.sources)
+            self._recheck.setEnabled(self._pending is None)
+
+    def _unpin(self, _action: int) -> None:
+        """Человек листает сам: новый вопрос у края больше не держим."""
+        self._pin = None
+
+    def _hold_pin(self, *_range) -> None:
+        """Вопрос хода _pin — у верхнего края, насколько хватает длины ленты.
+
+        Зовётся и на каждое изменение длины прокрутки: лента растёт, пока
+        идёт ответ, и окно просмотра растёт вместе с карточкой.
+        """
+        if self._pin is None or self._pin >= len(self._anchors):
+            return
+        doc = self._text.document()
+        block = doc.findBlock(self._anchors[self._pin])
+        top = doc.documentLayout().blockBoundingRect(block).top()
+        bar = self._text.verticalScrollBar()
+        bar.setValue(min(int(top), bar.maximum()))
 
     def _retarget(self, snap: bool = False) -> None:
         """Высота — под содержимое. snap — сразу, без пружины: когда тянут край,
@@ -425,13 +623,11 @@ class AnswerCard(QWidget):
             self._tick.start()
 
     def _wanted_height(self) -> int:
-        """Высота, при которой виден весь ответ; потолок — забота вызывающего."""
+        """Высота, при которой виден весь разговор; потолок — забота вызывающего."""
         inner = self._width - 2 * PAD
         text_h = self._text_height(self._width - PAD - (PAD - 6))
         total = PAD - 4 + max(self._question_label.heightForWidth(inner - 30), self._close.height())
         total += GAP + text_h + 4
-        if not self._status.isHidden():
-            total += GAP + self._status.heightForWidth(inner)
         if not self._actions.isHidden():
             total += GAP + self._actions.sizeHint().height()
         total += PAD
@@ -609,6 +805,9 @@ def _shape(doc: QTextDocument, code_bg: QColor, link: QColor, gap: int) -> None:
     block = doc.begin()
     while block.isValid():
         fmt = block.blockFormat()
+        if fmt.hasProperty(_ROLE):
+            block = block.next()
+            continue
         code = fmt.hasProperty(QTextFormat.BlockCodeFence) or fmt.nonBreakableLines()
         if code:
             fmt.setNonBreakableLines(False)
@@ -672,6 +871,17 @@ def _shape(doc: QTextDocument, code_bg: QColor, link: QColor, gap: int) -> None:
             fmt.setBottomMargin(0)
             QTextCursor(block).setBlockFormat(fmt)
         block = block.next()
+
+
+def _block(role: str, top: int = 0, bottom: int = 0) -> QTextBlockFormat:
+    """Абзац, который карточка вставляет в ленту сама; распорка — нулевой высоты."""
+    fmt = QTextBlockFormat()
+    fmt.setProperty(_ROLE, role)
+    fmt.setTopMargin(top)
+    fmt.setBottomMargin(bottom)
+    if role == "spacer":
+        fmt.setLineHeight(0.0, QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+    return fmt
 
 
 def _beside_frame(block, doc: QTextDocument) -> bool:

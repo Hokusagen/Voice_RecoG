@@ -43,6 +43,11 @@ class Job:
     recheck: bool = False
     """Задать последний вопрос заново с поиском; звука у такой задачи нет."""
 
+    followup: bool = False
+    """Вопрос задан при открытой карточке: он продолжает её разговор, сколько
+    бы ни прошло после ответа. Видна ли карточка, знает только поток интерфейса,
+    поэтому решение едет вместе с задачей."""
+
 
 class _Shutdown:
     """Маркер конца очереди."""
@@ -78,8 +83,10 @@ class Pipeline(QObject):
     limited = Signal(str, float)
     """Облако упёрлось в лимит: вид («minute» или «day») и секунды до сброса."""
 
-    asking = Signal(str, bool)
-    """Вопрос услышан и ушёл модели: текст вопроса и ищет ли она в интернете."""
+    asking = Signal(str, int, str, bool)
+    """Вопрос услышан и ушёл модели: ключ разговора, номер хода с единицы,
+    текст вопроса и ищет ли модель в интернете. Перепроверка приходит с
+    номером того хода, который заменит."""
 
     answer_delta = Signal(str)
     """Очередной кусок ответа на вопрос, пока модель его пишет: для карточки."""
@@ -367,7 +374,7 @@ class Pipeline(QObject):
         record = AskRecord(audio_s=round(len(job.audio) / self._sample_rate, 2), hotkey=job.hotkey)
         record.rms = loudness(job.audio, self._sample_rate, self._audio.silence_rms).rms
 
-        conversation = self._asker.conversation()
+        conversation = self._asker.conversation(keep=job.followup)
         record.conversation = conversation.id
         record.turn = len(conversation.turns) + 1
         record.stt_prompt = self._asker.whisper_hint(conversation) or self._whisper.cfg.initial_prompt
@@ -395,7 +402,7 @@ class Pipeline(QObject):
         record.app = active_app()
 
         self._emit(Stage.POLISHING, "Думаю", self._asker.cfg.model)
-        self.asking.emit(question, self._asker.cfg.web_search)
+        self.asking.emit(conversation.id, record.turn, question, self._asker.cfg.web_search)
         asked = time.monotonic()
         try:
             answer = self._asker.ask(question, conversation, self.answer_delta.emit)
@@ -422,7 +429,7 @@ class Pipeline(QObject):
             record.conversation = conversation.id
             record.turn = len(conversation.turns)
             record.question = conversation.turns[-1].question
-            self.asking.emit(record.question, True)
+            self.asking.emit(conversation.id, record.turn, record.question, True)
         self._emit(Stage.POLISHING, "Ищу", self._asker.cfg.model)
         try:
             _, question, answer = self._asker.recheck(self.answer_delta.emit)
