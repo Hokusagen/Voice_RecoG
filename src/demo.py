@@ -6,7 +6,7 @@
     venv\\Scripts\\python.exe src\\demo.py voice      «Слушаю» без конца, голос с микрофона
     venv\\Scripts\\python.exe src\\demo.py card       вопрос Дарви, уточнение и карточка ответа
 
-Выход — Ctrl+C в терминале.
+Выход — кнопка «Остановить демо» слева вверху или Ctrl+C в терминале.
 
 Нужен, чтобы смотреть на оформление живьём: стекло, кромку и переходы можно
 оценить только в движении, по скриншотам они врут.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import math
+import signal
 import sys
 from pathlib import Path
 
@@ -107,7 +108,35 @@ class MicVoice:
         return self._level
 
 
-def voice_panel(sources: dict, choice: dict) -> QWidget:
+class StopPanel(QWidget):
+    """Кнопка, которая закрывает демо целиком.
+
+    Демо крутится по кругу, а терминал, из которого его запустили, бывает не
+    под рукой — например, когда демо запустил агент в фоне. Закрыть окошко
+    крестиком — тоже выход.
+    """
+
+    def __init__(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QPushButton, QVBoxLayout
+
+        super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setWindowTitle("Демо")
+        layout = QVBoxLayout(self)
+        button = QPushButton("Остановить демо")
+        button.setMinimumHeight(32)
+        button.clicked.connect(QApplication.quit)
+        layout.addWidget(button)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.move(screen.left() + 24, screen.top() + 24)
+        self.show()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — имя из Qt
+        event.accept()
+        QApplication.quit()
+
+
+def voice_panel(sources: dict, choice: dict, top: int) -> QWidget:
     """Переключатель источника звука для демо «voice»: свой микрофон или синтетика."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QButtonGroup, QLabel, QRadioButton, QVBoxLayout
@@ -125,7 +154,7 @@ def voice_panel(sources: dict, choice: dict) -> QWidget:
         sound.addButton(button, index)
         layout.addWidget(button)
     screen = QApplication.primaryScreen().availableGeometry()
-    panel.move(screen.left() + 24, screen.top() + 24)
+    panel.move(screen.left() + 24, top)
     panel.show()
     return panel
 
@@ -300,7 +329,7 @@ def card_demo(cfg: Config) -> dict:
     card.insert_requested.connect(lambda text: print(f"  вставил бы: {text[:70]}…"))
     card.closed.connect(closed)
 
-    print("Демо карточки. Кнопки живые, Ctrl+C в терминале — выход.\n")
+    print("Демо карточки. Кнопки живые; выход — «Остановить демо» слева вверху.\n")
     ask(0)
     return {"hud": hud, "card": card, "clock": clock, "stream": stream}
 
@@ -308,6 +337,10 @@ def card_demo(cfg: Config) -> dict:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("VoiceTyper Demo")
+    # Пока крутится цикл Qt, Python не видит Ctrl+C: без этого демо из
+    # терминала не закрыть.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    stop = StopPanel()
 
     cfg = Config.load()
     argument = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -319,7 +352,8 @@ def main() -> int:
     if card_only:
         keep = card_demo(cfg)  # noqa: F841 — держит окна и таймеры живыми
         return app.exec()
-    state = {"hud": hud_module.create(cfg.ui), "step": 0, "font": 0}
+    state = {"stop": stop}
+    state.update(hud=hud_module.create(cfg.ui), step=0, font=0)
 
     voice = FakeVoice()
     elapsed = {"since": 0.0}
@@ -383,10 +417,10 @@ def main() -> int:
         state["hud"].show_status(status)
         QTimer.singleShot(hold, advance)
 
-    print("Демо HUD. Ctrl+C в терминале, чтобы закрыть.\n")
+    print("Демо HUD. Выход — «Остановить демо» слева вверху.\n")
     if voice_only:
         voice.speaking = True
-        state["panel"] = voice_panel(sources, choice)
+        state["panel"] = voice_panel(sources, choice, stop.frameGeometry().bottom() + 12)
         state["hud"].show_status(Status(Stage.LISTENING, "Слушаю"))
     else:
         advance()
