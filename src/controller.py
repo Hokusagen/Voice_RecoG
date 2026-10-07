@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 
+import numpy as np
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
@@ -24,6 +25,7 @@ from core.sounds import SoundBoard
 from core.state import Stage, Status
 from core.stt import WhisperEngine
 from ui import hud as hud_module
+from ui.card import AnswerCard
 from ui.tray import Tray
 
 #: Как часто проверять, не пора ли отпустить микрофон.
@@ -51,6 +53,7 @@ class Controller(QObject):
 
         self.hud = hud_module.create(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
+        self.card = AnswerCard(cfg.ui)
 
         self.tray = Tray(cfg.ui, cfg.hotkeys, cfg.llm)
         self.hotkeys = HotkeyListener(cfg.hotkeys)
@@ -105,6 +108,14 @@ class Controller(QObject):
         self.pipeline.quota.connect(self._on_quota)
         self.pipeline.limited.connect(self._on_limited)
 
+        self.pipeline.asking.connect(self.card.start)
+        self.pipeline.answer_delta.connect(self.card.feed)
+        self.pipeline.sources.connect(self.card.finish)
+        self.pipeline.answer_failed.connect(self.card.fail)
+        self.card.insert_requested.connect(self._on_card_insert)
+        self.card.recheck_requested.connect(self._on_recheck)
+        self.card.closed.connect(self._on_card_closed)
+
         self.tray.pause_toggled.connect(self._on_pause)
         self.tray.gpu_toggled.connect(self._on_release_gpu)
         self.tray.sounds_toggled.connect(self._on_sounds)
@@ -138,6 +149,7 @@ class Controller(QObject):
         self.recorder.cancel_capture()
         self.recorder.close()
         self.hud.hide()
+        self.card.hide()
         self.tray.hide()
         self.pipeline.shutdown()
         QApplication.quit()
@@ -210,6 +222,10 @@ class Controller(QObject):
             return
 
         self._action = action
+        if action != "ask":
+            # Диктовка — значит, человек вернулся к работе. Разговор при этом
+            # не кончается: уточнение в пределах ask.followup_s его продолжит.
+            self.card.dismiss()
         self.sounds.play("start")
         hint = "отпустите клавишу, когда закончите"
         if self.cfg.hotkeys.mode == "toggle":
@@ -331,6 +347,25 @@ class Controller(QObject):
     def _on_transcribed(self, text: str) -> None:
         self.history.add(text)
         self.tray.set_history(self.history)
+
+    # ---------- карточка ответа ----------
+
+    @Slot(str)
+    def _on_card_insert(self, text: str) -> None:
+        # Карточка фокус не берёт, поэтому активным осталось окно, где человек
+        # работал, — туда и вставляем, как диктовку.
+        self.paster.paste(text)
+
+    @Slot()
+    def _on_recheck(self) -> None:
+        if self.asker is None:
+            return
+        self.pipeline.submit(Job(audio=np.zeros(0, dtype=np.float32), style=None, hotkey="", recheck=True))
+
+    @Slot()
+    def _on_card_closed(self) -> None:
+        if self.asker is not None:
+            self.asker.close()
 
     # ---------- меню трея ----------
 
