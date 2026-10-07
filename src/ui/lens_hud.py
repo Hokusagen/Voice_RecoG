@@ -80,8 +80,22 @@ LABEL_PAD = 8
 #: Слог — атака 70 мс, спад 280 мс; фраза поверх слога — атака 180 мс, спад
 #: 0.75 с. Форму ведёт фраза: на каждом слоге плашка не дёргается, а «говорю /
 #: молчу» видно сразу. Те же числа — в лаборатории, design/glass/voice.
-VOICE_DB = (-56.0, -6.0)
 PHRASE_ATTACK, PHRASE_DECAY = 0.18, 0.75
+
+#: Окно дБ следит за голосом — автоусиление вместо постоянного окна −56…−6.
+#: Обычная речь в журнале диктовок — около −31 дБ по звучащим блокам (7.10.2026),
+#: и в постоянном окне шёлк раскрывался целиком только на крике. Опора — средний
+#: уровень звучащих блоков за последние секунды, новую громкость она догоняет
+#: за пару секунд: ближе микрофон или дальше, привычный голос раскрывает шёлк
+#: одинаково. Низ окна держится над шумом в паузах, иначе усиление подняло бы шум.
+VOICE_REF0 = -33.0             # опора при запуске: так оседает обычная речь
+VOICE_REF_TAU = 2.5            # с — как быстро опора догоняет новую громкость
+VOICE_REF_RANGE = (-46.0, -14.0)
+VOICE_SPAN = (30.0, 10.0)      # окно: от опоры −30 до опоры +10 дБ
+VOICE_GATE = 15.0              # блок громче шума на столько — речь, по нему учится опора
+VOICE_ROOM = 6.0               # низ окна не ближе к шуму
+VOICE_FLOOR0 = -60.0
+VOICE_FLOOR_RISE = 1.0         # дБ/с: вниз пол идёт сразу, вверх медленно — речь его не утянет
 
 #: Думающий диск (island.js): лепестки по кругу и их глубина в долях радиуса.
 LOBES = (5, 7, 4)
@@ -188,13 +202,26 @@ class _Motion:
         self.syllable = 0.0
         self.phrase = 0.0
         self.flow = 0.0
+        # Опора и шум живут, пока запущено приложение: следующая диктовка
+        # начинается с громкости прошлой, а не с нуля.
+        self.voice_ref = VOICE_REF0
+        self.voice_floor = VOICE_FLOOR0
+
+    def loudness(self, db: float, dt: float) -> float:
+        """Громкость блока 0…1 в окне, которое подстраивается под голос и шум."""
+        self.voice_floor = min(db, self.voice_floor + VOICE_FLOOR_RISE * dt)
+        if db > self.voice_floor + VOICE_GATE:
+            self.voice_ref += (db - self.voice_ref) * (1.0 - math.exp(-dt / VOICE_REF_TAU))
+            self.voice_ref = min(max(self.voice_ref, VOICE_REF_RANGE[0]), VOICE_REF_RANGE[1])
+        lo = max(self.voice_ref - VOICE_SPAN[0], self.voice_floor + VOICE_ROOM)
+        hi = self.voice_ref + VOICE_SPAN[1]
+        return clamp01((db - lo) / max(hi - lo, 6.0)) ** 0.7
 
     def voice(self, dt: float, level: float, listening: bool) -> tuple[float, float, float, float]:
         """Огибающие голоса: (видимость, фраза 0…1, слог, накопленная фаза течения дыма)."""
         x = 0.0
         if listening and level > 1e-6:
-            db = 20.0 * math.log10(level)
-            x = clamp01((db - VOICE_DB[0]) / (VOICE_DB[1] - VOICE_DB[0])) ** 0.7
+            x = self.loudness(20.0 * math.log10(level), dt)
         a = 1.0 - math.exp(-dt / (0.07 if x > self.syllable else 0.28))
         self.syllable += (x - self.syllable) * a
         a = 1.0 - math.exp(-dt / (PHRASE_ATTACK if self.syllable > self.phrase else PHRASE_DECAY))

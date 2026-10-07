@@ -306,32 +306,39 @@ void main() {
 
   // ------------------------------------------------------------ варианты
 
-  // Шёлк по мотивам LiveKit Aura: 24 нити — одна и та же линия, искажённая
+  // Шёлк по мотивам LiveKit Aura: 32 нити — одна и та же линия, искажённая
   // синусами со своей фазой; вместе они вьются, как дым. Поле общее для всех
   // трёх способов показать его на прозрачном стекле: плотность нитей, оттенок
   // вдоль них (бирюза → фиолет) и «тело» дыма — широкая мягкая подложка.
   // Рисунок крупнее капсулы в SILK_ZOOM раз, а нити бесконечны: они уходят под
   // кромку, и у дыма нет своих концов и краёв — его обрезает только стекло.
+  // На крупном рисунке завитков на длину стало мало, а нити сливались в одно
+  // полотно: частота завитков выше, чем у эскиза (SILK_CURL 2.1 против 1.7), и
+  // фазы нитей разведены шире (SILK_SPREAD) — в складках проступают волокна.
   const SILK = `
 uniform float uFlow;    // накопленная фаза течения дыма: фраза её подгоняет
 uniform float uLevel;   // слог — только яркость, форму он не трогает
 const float SILK_ZOOM = 1.6;
+const float SILK_CURL = 2.1;
+const float SILK_SPREAD = 1.3;
+const int SILK_STRANDS = 32;
 struct Silk { float d; float t; float body; };
 Silk silkField(vec2 q, float gain) {
   float ph = uPhrase;
   vec2 base = q / (uSize.y * 0.5 * SILK_ZOOM);
   // Нити держатся у оси: сердцевина яркая и плотная, по краям — волокна дыма.
   float amp = mix(0.07, 0.28, ph);
+  float n = float(SILK_STRANDS);
   float acc = 0.0, accT = 0.0, wide = 0.0;
-  for (int i = 0; i < 24; i++) {
-    float fi = float(i) / 24.0;
+  for (int i = 0; i < SILK_STRANDS; i++) {
+    float fi = float(i) / n;
     vec2 p = base;
-    float fr = 1.7, a = amp;
+    float fr = SILK_CURL, a = amp;
     for (int j = 0; j < 3; j++) {
       float fj = float(j);
       // Волны бегут вдоль капсулы (минус у фазы по x), а нити переплетаются: дым течёт.
-      p += a * vec2(sin(p.y * fr * 1.3 + fi * 2.4 + uSeed + fj * 1.7 + uFlow * (0.6 + 0.5 * fj)),
-                    sin(p.x * fr + fi * 3.1 + uSeed * 1.3 + fj * 2.3 - uFlow * (1.0 + 0.6 * fj)));
+      p += a * vec2(sin(p.y * fr * 1.3 + fi * 2.4 * SILK_SPREAD + uSeed + fj * 1.7 + uFlow * (0.6 + 0.5 * fj)),
+                    sin(p.x * fr + fi * 3.1 * SILK_SPREAD + uSeed * 1.3 + fj * 2.3 - uFlow * (1.0 + 0.6 * fj)));
       fr *= 1.7; a *= 0.6;
     }
     float d = abs(p.y);
@@ -345,9 +352,11 @@ Silk silkField(vec2 q, float gain) {
   }
   Silk s;
   s.t = accT / max(acc, 1e-4);
-  // Нити складываются, а не усредняются: где они сходятся, свет густеет.
-  s.d = 1.0 - exp(-acc * 0.13 * gain * mix(0.5, 1.0, ph) * (0.88 + 0.24 * uLevel));
-  s.body = (1.0 - exp(-wide * 0.05)) * mix(0.5, 1.0, ph);
+  // Нити складываются, а не усредняются: где они сходятся, свет густеет. Яркость
+  // отмерена на 24 нити: лишние нити дробят свет на волокна, а не густят его.
+  float k = 24.0 / n;
+  s.d = 1.0 - exp(-acc * k * 0.13 * gain * mix(0.5, 1.0, ph) * (0.88 + 0.24 * uLevel));
+  s.body = (1.0 - exp(-wide * k * 0.05)) * mix(0.5, 1.0, ph);
   return s;
 }
 vec3 silkGlow(float t) { return mix(vec3(0.10, 0.84, 1.0), vec3(0.58, 0.42, 1.0), t); }
@@ -500,10 +509,17 @@ vec3 voice(vec3 col, vec2 q, float inside, float tone) {
 
   // ------------------------------------------------------------ голос
 
-  // Те же огибающие, что в приложении (ui.lens_hud, Physics.voice): громкость в
-  // окне −56…−6 дБ с гаммой 0.7; «слог» — атака 70 мс, спад 280 мс; «фраза» поверх
+  // Те же огибающие, что в приложении (ui.lens_hud, _Motion.voice): громкость в
+  // окне дБ с гаммой 0.7; «слог» — атака 70 мс, спад 280 мс; «фраза» поверх
   // слога — 180 мс и 0.75 с. Форму ведёт фраза, слог трогает только яркость.
-  const VOICE_DB = [-56, -6];
+  // Окно следит за голосом (автоусиление): опора — средний уровень звучащих
+  // блоков за последние секунды, окно от опоры −30 до опоры +10 дБ, низ — над
+  // шумом пауз. Обычная речь в журнале — около −31 дБ: в постоянном окне −56…−6
+  // шёлк раскрывался целиком только на крике.
+  const VOICE_AGC = {
+    ref0: -33, tau: 2.5, refRange: [-46, -14], span: [30, 10],
+    gate: 15, room: 6, floor0: -60, floorRise: 1,
+  };
 
   // Детерминированная речь, как в лаборатории (harness.js → stepVoice): фразы из
   // слогов 4–6 Гц, ударный слог громче. Паузы между фразами то короткие, как
@@ -522,6 +538,8 @@ vec3 voice(vec3 col, vec2 q, float inside, float tone) {
       this.talking = false;
       this.syllable = 0;
       this.phrase = 0;
+      this.ref = VOICE_AGC.ref0;
+      this.floor = VOICE_AGC.floor0;
     }
     rand() {
       this.seed = (this.seed * 16807) % 2147483647;
@@ -543,13 +561,25 @@ vec3 voice(vec3 col, vec2 q, float inside, float tone) {
         this.amp = 0.35 + this.rand() * 0.65;
         this.rate = 4 + this.rand() * 2.2;
       }
-      return 0.0015 + 0.3 * target;
+      // Речь около −31 дБ по звучащим блокам — как обычная речь в журнале диктовок.
+      return 0.0015 + 0.059 * target;
+    }
+    /** Громкость блока 0…1 в окне, которое подстраивается под голос и шум. */
+    loudness(db, dt) {
+      const A = VOICE_AGC;
+      this.floor = Math.min(db, this.floor + A.floorRise * dt);
+      if (db > this.floor + A.gate) {
+        this.ref += (db - this.ref) * (1 - Math.exp(-dt / A.tau));
+        this.ref = Math.min(Math.max(this.ref, A.refRange[0]), A.refRange[1]);
+      }
+      const lo = Math.max(this.ref - A.span[0], this.floor + A.room);
+      const hi = this.ref + A.span[1];
+      return Math.pow(clamp01((db - lo) / Math.max(hi - lo, 6)), 0.7);
     }
     step(dt, micRms = null) {
       this.t += dt;
       const rms = micRms == null ? this.simulatedRms(dt) : micRms;
-      const db = 20 * Math.log10(Math.max(rms, 1e-7));
-      const x = Math.pow(clamp01((db - VOICE_DB[0]) / (VOICE_DB[1] - VOICE_DB[0])), 0.7);
+      const x = rms > 1e-6 ? this.loudness(20 * Math.log10(rms), dt) : 0;
       let a = 1 - Math.exp(-dt / (x > this.syllable ? 0.07 : 0.28));
       this.syllable += (x - this.syllable) * a;
       a = 1 - Math.exp(-dt / (this.syllable > this.phrase ? 0.18 : 0.75));

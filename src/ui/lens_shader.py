@@ -148,15 +148,21 @@ float3 statusRim(float3 col, float2 p, float inside, float S) {
 
 // ---------- голос: Шёлк ----------
 
-// Шёлк по мотивам LiveKit Aura — перенос design/glass/voice: 24 нити — одна и та
+// Шёлк по мотивам LiveKit Aura — перенос design/glass/voice: 32 нити — одна и та
 // же линия, искажённая синусами со своей фазой; вместе они вьются, как дым.
 // Волны бегут вдоль капсулы (минус у фазы по x). Фраза густит дым и раскручивает
 // нити, слог трогает только яркость. Координаты — px макета от центра пилюли.
 // Рисунок крупнее капсулы в SILK_ZOOM раз, а нити бесконечны: они уходят под
 // кромку, и у дыма нет своих концов и краёв — его обрезает только стекло.
+// На крупном рисунке завитков на длину стало мало, а нити сливались в одно
+// полотно: частота завитков выше, чем у эскиза (SILK_CURL 2.1 против 1.7), и фазы
+// нитей разведены шире (SILK_SPREAD) — в складках проступают волокна.
 static const float SILK_SEED = 0.6;
 static const float SILK_GAIN = 2.1;
 static const float SILK_ZOOM = 1.6;
+static const float SILK_CURL = 2.1;
+static const float SILK_SPREAD = 1.3;
+static const int SILK_STRANDS = 32;
 
 struct Silk { float d; float t; float body; };
 
@@ -164,15 +170,16 @@ Silk silkField(float2 q, float hh, float ph, float flow, float level) {
     float2 base = q / (hh * SILK_ZOOM);
     // Нити держатся у оси: сердцевина яркая и плотная, по краям — волокна дыма.
     float amp = lerp(0.07, 0.28, ph);
+    float n = (float)SILK_STRANDS;
     float acc = 0.0, accT = 0.0, wide = 0.0;
-    [loop] for (int i = 0; i < 24; i++) {
-        float fi = (float)i / 24.0;
+    [loop] for (int i = 0; i < SILK_STRANDS; i++) {
+        float fi = (float)i / n;
         float2 pp = base;
-        float fr = 1.7, a = amp;
+        float fr = SILK_CURL, a = amp;
         [unroll] for (int j = 0; j < 3; j++) {
             float fj = (float)j;
-            pp += a * float2(sin(pp.y * fr * 1.3 + fi * 2.4 + SILK_SEED + fj * 1.7 + flow * (0.6 + 0.5 * fj)),
-                             sin(pp.x * fr + fi * 3.1 + SILK_SEED * 1.3 + fj * 2.3 - flow * (1.0 + 0.6 * fj)));
+            pp += a * float2(sin(pp.y * fr * 1.3 + fi * 2.4 * SILK_SPREAD + SILK_SEED + fj * 1.7 + flow * (0.6 + 0.5 * fj)),
+                             sin(pp.x * fr + fi * 3.1 * SILK_SPREAD + SILK_SEED * 1.3 + fj * 2.3 - flow * (1.0 + 0.6 * fj)));
             fr *= 1.7;
             a *= 0.6;
         }
@@ -187,9 +194,11 @@ Silk silkField(float2 q, float hh, float ph, float flow, float level) {
     }
     Silk s;
     s.t = accT / max(acc, 1e-4);
-    // Нити складываются, а не усредняются: где они сходятся, свет густеет.
-    s.d = 1.0 - exp(-acc * 0.13 * SILK_GAIN * lerp(0.5, 1.0, ph) * (0.88 + 0.24 * level));
-    s.body = (1.0 - exp(-wide * 0.05)) * lerp(0.5, 1.0, ph);
+    // Нити складываются, а не усредняются: где они сходятся, свет густеет. Яркость
+    // отмерена на 24 нити: лишние нити дробят свет на волокна, а не густят его.
+    float k = 24.0 / n;
+    s.d = 1.0 - exp(-acc * k * 0.13 * SILK_GAIN * lerp(0.5, 1.0, ph) * (0.88 + 0.24 * level));
+    s.body = (1.0 - exp(-wide * k * 0.05)) * lerp(0.5, 1.0, ph);
     return s;
 }
 
