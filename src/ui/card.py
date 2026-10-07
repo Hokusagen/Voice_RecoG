@@ -32,6 +32,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QTextBlockFormat,
+    QTextCharFormat,
     QTextCursor,
     QTextDocument,
     QTextFormat,
@@ -73,6 +74,10 @@ BLUR_DIV = 14
 #: Плотная вуаль поверх размытого фона: светлая над светлым, тёмная над тёмным.
 VEIL_LIGHT = QColor(250, 250, 252, 214)
 VEIL_DARK = QColor(22, 25, 33, 206)
+
+#: Шрифт кода по порядку: что найдётся первым. Сам импортёр Markdown берёт
+#: Courier New, а таблицу стилей документа, где стоял Consolas, не читает.
+CODE_FAMILIES = ["Consolas", "Menlo", "Courier New"]
 
 
 class AnswerCard(QWidget):
@@ -200,7 +205,6 @@ class AnswerCard(QWidget):
             f"QScrollBar::handle:vertical {{ background: {line}; border-radius: 3px; min-height: 24px; }}"
             "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
         )
-        self._text.document().setDefaultStyleSheet(f"a {{ color: {link}; }} code, pre {{ font-family: Consolas; }}")
         button = (
             f"QPushButton {{ color: {text}; background: transparent; border: 1px solid {line};"
             f" border-radius: 8px; padding: 3px 10px; }}"
@@ -214,6 +218,7 @@ class AnswerCard(QWidget):
             f"QPushButton:hover {{ background: {hover}; color: {text}; }}"
         )
         self._status_link = link
+        self._link = QColor(link)
         self._code_bg = QColor(0, 0, 0, 13) if self._light else QColor(255, 255, 255, 18)
 
     # ---------- что показывать ----------
@@ -355,7 +360,7 @@ class AnswerCard(QWidget):
         bar = self._text.verticalScrollBar()
         keep = bar.value()
         self._text.setMarkdown(clean_answer(self._raw))
-        _shape(self._text.document(), self._code_bg, int(round(8 * self._scale)))
+        _shape(self._text.document(), self._code_bg, self._link, int(round(8 * self._scale)))
         bar.setValue(keep)
         self._retarget()
 
@@ -453,15 +458,17 @@ def _domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host or url
 
 
-def _shape(doc: QTextDocument, code_bg: QColor, gap: int) -> None:
-    """Отступы абзацев и вид кода после setMarkdown.
+def _shape(doc: QTextDocument, code_bg: QColor, link: QColor, gap: int) -> None:
+    """Отступы абзацев, вид кода и цвет ссылок после setMarkdown.
 
     Импортёр Markdown в Qt берёт отступ абзаца из размера шрифта в пунктах, а
     у шрифта карточки размер задан в пикселях: пунктов нет — и абзацы
     слипаются. Код он не переносит по словам, и в узкой карточке строки уходят
-    за край; к тому же без подложки код не отличить от текста.
+    за край; к тому же без подложки код не отличить от текста. Ссылки он красит
+    тёмно-синим #003173 мимо таблицы стилей — на тёмной вуали их не видно.
     """
     runs: list[tuple[int, int]] = []
+    spans: list[tuple[int, int, bool]] = []
     block = doc.begin()
     while block.isValid():
         fmt = block.blockFormat()
@@ -471,11 +478,21 @@ def _shape(doc: QTextDocument, code_bg: QColor, gap: int) -> None:
             fmt.setTopMargin(0)
             fmt.setBottomMargin(0)
             start, end = block.position(), block.position() + block.length() - 1
+            # У блока кода признак моноширинного шрифта импортёр ставит в
+            # False, хотя шрифт Courier New, — код узнаём по самому блоку.
+            spans.append((start, end, False))
             if runs and runs[-1][1] + 1 == start:
                 runs[-1] = (runs[-1][0], end)
             else:
                 runs.append((start, end))
         else:
+            piece = block.begin()
+            while not piece.atEnd():
+                fragment = piece.fragment()
+                char = fragment.charFormat()
+                if char.isAnchor() or char.fontFixedPitch():
+                    spans.append((fragment.position(), fragment.position() + fragment.length(), char.isAnchor()))
+                piece += 1
             # Пункты одного списка — плотнее, абзацы — с воздухом.
             following = block.next()
             same_list = block.textList() is not None and following.isValid() and following.textList() is block.textList()
@@ -483,6 +500,16 @@ def _shape(doc: QTextDocument, code_bg: QColor, gap: int) -> None:
             fmt.setBottomMargin(gap // 3 if same_list else gap)
         QTextCursor(block).setBlockFormat(fmt)
         block = block.next()
+
+    # Цвет и шрифт — до рамок: рамка вставляет свои абзацы и сдвигает позиции.
+    linked, coded = QTextCharFormat(), QTextCharFormat()
+    linked.setForeground(link)
+    coded.setFontFamilies(CODE_FAMILIES)
+    for start, end, is_link in spans:
+        cursor = QTextCursor(doc)
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        cursor.mergeCharFormat(linked if is_link else coded)
 
     # Код — в рамку с подложкой и полями: у блока своих полей нет, а у рамки есть.
     frame = QTextFrameFormat()
