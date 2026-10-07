@@ -152,14 +152,16 @@ float3 statusRim(float3 col, float2 p, float inside, float S) {
 // же линия, искажённая синусами со своей фазой; вместе они вьются, как дым.
 // Волны бегут вдоль капсулы (минус у фазы по x). Фраза густит дым и раскручивает
 // нити, слог трогает только яркость. Координаты — px макета от центра пилюли.
+// Рисунок крупнее капсулы в SILK_ZOOM раз, а нити бесконечны: они уходят под
+// кромку, и у дыма нет своих концов и краёв — его обрезает только стекло.
 static const float SILK_SEED = 0.6;
-static const float SILK_GAIN = 1.4;
+static const float SILK_GAIN = 2.1;
+static const float SILK_ZOOM = 1.6;
 
 struct Silk { float d; float t; float body; };
 
-Silk silkField(float2 q, float hh, float hw, float ph, float flow, float level) {
-    float L = (hw - hh * 0.6) / hh;
-    float2 base = q / hh;
+Silk silkField(float2 q, float hh, float ph, float flow, float level) {
+    float2 base = q / (hh * SILK_ZOOM);
     // Нити держатся у оси: сердцевина яркая и плотная, по краям — волокна дыма.
     float amp = lerp(0.07, 0.28, ph);
     float acc = 0.0, accT = 0.0, wide = 0.0;
@@ -174,19 +176,20 @@ Silk silkField(float2 q, float hh, float hw, float ph, float flow, float level) 
             fr *= 1.7;
             a *= 0.6;
         }
-        float d = length(pp - float2(clamp(pp.x, -L, L), 0.0));
-        // Волокно — плотная сердцевина в пару пикселей и слабый ореол вокруг.
-        float w = exp(-pow(d / 0.12, 1.4)) + 0.12 / (1.0 + d * d / 0.09);
+        float d = abs(pp.y);
+        // Волокно — плотная сердцевина в пару пикселей и слабый ореол вокруг. Оно
+        // тонкое относительно рисунка: на крупном рисунке толстые волокна сливаются
+        // в туман, а тонкие дают складки шёлка.
+        float w = exp(-pow(d / 0.05, 1.4)) + 0.06 / (1.0 + d * d / 0.0156);
         acc += w;
         accT += w * fi;
         wide += 1.0 / (1.0 + d * d / 0.2);
     }
-    float ends = 1.0 - smoothstep(L - 1.0, L + 0.6, abs(base.x));
     Silk s;
     s.t = accT / max(acc, 1e-4);
     // Нити складываются, а не усредняются: где они сходятся, свет густеет.
-    s.d = 1.0 - exp(-acc * 0.13 * SILK_GAIN * ends * lerp(0.5, 1.0, ph) * (0.88 + 0.24 * level));
-    s.body = (1.0 - exp(-wide * 0.07 * ends)) * lerp(0.5, 1.0, ph);
+    s.d = 1.0 - exp(-acc * 0.13 * SILK_GAIN * lerp(0.5, 1.0, ph) * (0.88 + 0.24 * level));
+    s.body = (1.0 - exp(-wide * 0.05)) * lerp(0.5, 1.0, ph);
     return s;
 }
 
@@ -197,7 +200,7 @@ Silk silkField(float2 q, float hh, float hw, float ph, float flow, float level) 
 // ней ось читается как свет, а стекло вокруг остаётся чистым.
 float4 voiceSilk(float2 p, float S, float tone) {
     float ph = uVoice.y;
-    Silk s = silkField((p - uPill.xy) / S, uPill.w / S * 0.5, uPill.z / S * 0.5, ph, uVoice.w, uVoice.z);
+    Silk s = silkField((p - uPill.xy) / S, uPill.w / S * 0.5, ph, uVoice.w, uVoice.z);
     float3 bodyInk = lerp(float3(0.16, 0.38, 0.92), float3(0.42, 0.28, 0.90), s.t);
     float bodyA = s.body * lerp(0.12, 0.08, tone);
     float4 body = float4(bodyInk * bodyA, bodyA);

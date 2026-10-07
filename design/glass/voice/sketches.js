@@ -310,15 +310,16 @@ void main() {
   // синусами со своей фазой; вместе они вьются, как дым. Поле общее для всех
   // трёх способов показать его на прозрачном стекле: плотность нитей, оттенок
   // вдоль них (бирюза → фиолет) и «тело» дыма — широкая мягкая подложка.
+  // Рисунок крупнее капсулы в SILK_ZOOM раз, а нити бесконечны: они уходят под
+  // кромку, и у дыма нет своих концов и краёв — его обрезает только стекло.
   const SILK = `
 uniform float uFlow;    // накопленная фаза течения дыма: фраза её подгоняет
 uniform float uLevel;   // слог — только яркость, форму он не трогает
+const float SILK_ZOOM = 1.6;
 struct Silk { float d; float t; float body; };
 Silk silkField(vec2 q, float gain) {
   float ph = uPhrase;
-  float hh = uSize.y * 0.5;
-  float L = (uSize.x * 0.5 - hh * 0.6) / hh;
-  vec2 base = q / hh;
+  vec2 base = q / (uSize.y * 0.5 * SILK_ZOOM);
   // Нити держатся у оси: сердцевина яркая и плотная, по краям — волокна дыма.
   float amp = mix(0.07, 0.28, ph);
   float acc = 0.0, accT = 0.0, wide = 0.0;
@@ -333,19 +334,20 @@ Silk silkField(vec2 q, float gain) {
                     sin(p.x * fr + fi * 3.1 + uSeed * 1.3 + fj * 2.3 - uFlow * (1.0 + 0.6 * fj)));
       fr *= 1.7; a *= 0.6;
     }
-    float d = length(p - vec2(clamp(p.x, -L, L), 0.0));
-    // Волокно — плотная сердцевина в пару пикселей и слабый ореол вокруг.
-    float w = exp(-pow(d / 0.12, 1.4)) + 0.12 / (1.0 + d * d / 0.09);
+    float d = abs(p.y);
+    // Волокно — плотная сердцевина в пару пикселей и слабый ореол вокруг. Оно
+    // тонкое относительно рисунка: на крупном рисунке толстые волокна сливаются
+    // в туман, а тонкие дают складки шёлка.
+    float w = exp(-pow(d / 0.05, 1.4)) + 0.06 / (1.0 + d * d / 0.0156);
     acc += w;
     accT += w * fi;
     wide += 1.0 / (1.0 + d * d / 0.2);
   }
-  float ends = smoothstep(L + 0.6, L - 1.0, abs(base.x));
   Silk s;
   s.t = accT / max(acc, 1e-4);
   // Нити складываются, а не усредняются: где они сходятся, свет густеет.
-  s.d = 1.0 - exp(-acc * 0.13 * gain * ends * mix(0.5, 1.0, ph) * (0.88 + 0.24 * uLevel));
-  s.body = (1.0 - exp(-wide * 0.07 * ends)) * mix(0.5, 1.0, ph);
+  s.d = 1.0 - exp(-acc * 0.13 * gain * mix(0.5, 1.0, ph) * (0.88 + 0.24 * uLevel));
+  s.body = (1.0 - exp(-wide * 0.05)) * mix(0.5, 1.0, ph);
   return s;
 }
 vec3 silkGlow(float t) { return mix(vec3(0.10, 0.84, 1.0), vec3(0.58, 0.42, 1.0), t); }
@@ -467,17 +469,19 @@ vec3 voice(vec3 col, vec2 q, float inside, float tone) {
     {
       id: 'silk',
       name: 'Шёлк',
-      line: 'Светящийся дым, свитый в волну, по мотивам LiveKit Aura. Стекло прозрачное: на белом шёлк держится насыщенным цветом и светлой осью.',
+      line: 'Светящийся дым, свитый в волну, по мотивам LiveKit Aura. Рисунок крупнее капсулы: нити уходят под кромку. Стекло прозрачное: на белом шёлк держится насыщенным цветом и светлой осью.',
       seed: 0.6,
       glsl: SILK + `
 vec3 voice(vec3 col, vec2 q, float inside, float tone) {
-  Silk s = silkField(q, 1.4);
+  Silk s = silkField(q, 2.1);
+  vec3 glass = col;
   // Под нитями — собственное тело дыма: полупрозрачная сине-фиолетовая подложка,
   // а не серая тень и не притемнённое стекло (оно серило всю пилюлю на белом).
   // На ней светлая ось читается как свет, а стекло вокруг остаётся чистым.
   vec3 bodyInk = mix(vec3(0.16, 0.38, 0.92), vec3(0.42, 0.28, 0.90), s.t);
   col = mix(col, bodyInk, s.body * mix(0.12, 0.08, tone));
-  return silkOver(col, s, tone, vec3(0.74, 0.95, 1.0));
+  // У самой кромки дым гаснет, как в приложении: блик и тёмная кромка — поверх.
+  return mix(glass, silkOver(col, s, tone, vec3(0.74, 0.95, 1.0)), smoothstep(0.6, 2.2, inside));
 }`,
       statics: (ph) => ({ phrase: ph, flow: 0, level: 0.5 }),
       makeLive() {
