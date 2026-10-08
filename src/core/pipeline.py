@@ -91,6 +91,9 @@ class Pipeline(QObject):
     answer_delta = Signal(str)
     """Очередной кусок ответа на вопрос, пока модель его пишет: для карточки."""
 
+    searching = Signal(str)
+    """Модель отправила запрос в поиск: карточке — показать, что она ищет."""
+
     answer_failed = Signal(str)
     """Ответа не будет: причина. Карточке — убрать «ищу» и вернуть прежнее."""
 
@@ -405,7 +408,7 @@ class Pipeline(QObject):
         self.asking.emit(conversation.id, record.turn, question, self._asker.cfg.web_search)
         asked = time.monotonic()
         try:
-            answer = self._asker.ask(question, conversation, self.answer_delta.emit)
+            answer = self._asker.ask(question, conversation, self.answer_delta.emit, on_search=self.searching.emit)
         except AskFailed as exc:
             record.error = str(exc)
             self._close(record, started)
@@ -432,7 +435,7 @@ class Pipeline(QObject):
             self.asking.emit(conversation.id, record.turn, record.question, True)
         self._emit(Stage.POLISHING, "Ищу", self._asker.cfg.model)
         try:
-            _, question, answer = self._asker.recheck(self.answer_delta.emit)
+            _, question, answer = self._asker.recheck(self.answer_delta.emit, self.searching.emit)
         except AskFailed as exc:
             record.error = str(exc)
             self._close(record, started)
@@ -460,7 +463,7 @@ class Pipeline(QObject):
             f"[ask] ответ {answer.model} · {answer.effort or '-'} за {record.answer_s:.1f} с "
             f"(первое слово {record.first_s:.1f} с, раздумья {answer.reasoning_tokens} ток.)"
             + (" · ОБОРВАН по max_tokens" if answer.truncated else "")
-            + (f" · искал: {', '.join(answer.sources)}" if answer.searched else " · без поиска")
+            + (f" · искал {_quoted(answer.queries)}: {', '.join(answer.sources)}" if answer.searched else " · без поиска")
             + f":\n{answer.text}\n"
         )
         self.answered.emit(question, answer.text)
@@ -584,3 +587,9 @@ def _note_attempt(
         attempt.text = polished.text
         attempt.accepted = polished.accepted
     record.attempts.append(attempt)
+
+
+def _quoted(queries: list[str]) -> str:
+    """Запросы модели к поиску — для лога. В журнал их не пишем: журнал — то,
+    из чего потом покажутся прошлые разговоры, а человеку они там ни к чему."""
+    return ", ".join(f"«{query}»" for query in queries) or "(запросов не видно)"

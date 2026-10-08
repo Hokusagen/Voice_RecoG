@@ -336,6 +336,20 @@ class AnswerCard(QWidget):
         elif not self._render_timer.isActive():
             self._render_timer.start()
 
+    @Slot(str)
+    def searching(self, query: str) -> None:
+        """Модель пошла в поиск: под ходом — с каким запросом, вместо общего «ищу».
+
+        Запрос пишет сама модель, и по нему сразу видно, если вопрос понят не
+        так. Показываем, только пока ответа нет: первое слово строку убирает,
+        а в ленте остаются источники. Новый запрос сменяет прежний.
+        """
+        if self._pending is None or not self._waiting:
+            return
+        self._turns[self._pending].note = f"ищу: «{query}»"
+        if self.is_open():
+            self._render()
+
     @Slot(list)
     def finish(self, sources: list[str]) -> None:
         """Ответ дописан: источники под ним и кнопки."""

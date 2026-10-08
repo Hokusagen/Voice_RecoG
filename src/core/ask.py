@@ -72,6 +72,9 @@ class Answer:
     searched: bool = False
     """Модель искала в интернете перед ответом."""
 
+    queries: list[str] = field(default_factory=list)
+    """Что модель искала: запросы пишет она сама, по вопросу и разговору."""
+
     opened: list[str] = field(default_factory=list)
     """Страницы, которые модель открыла и прочла."""
 
@@ -168,13 +171,16 @@ class Asker:
         conversation: Conversation,
         on_delta: Callable[[str], None] | None = None,
         search: bool | None = None,
+        on_search: Callable[[str], None] | None = None,
     ) -> Answer:
-        """search — искать ли в интернете; None — как в настройках (ask.web_search)."""
+        """search — искать ли в интернете; None — как в настройках (ask.web_search).
+        on_search получает каждый новый запрос модели к поиску, пока она ищет."""
         messages = self.messages(question, conversation)
 
         def ask(search: bool) -> Answer:
             return self._cloud.ask(
                 messages, self.cfg.model, self.cfg.reasoning_effort, self.cfg.max_tokens, on_delta, search,
+                on_search,
             )
 
         wanted = self.cfg.web_search if search is None else search
@@ -196,7 +202,11 @@ class Asker:
         conversation.last_at = time.monotonic()
         return answer
 
-    def recheck(self, on_delta: Callable[[str], None] | None = None) -> tuple[Conversation, str, Answer]:
+    def recheck(
+        self,
+        on_delta: Callable[[str], None] | None = None,
+        on_search: Callable[[str], None] | None = None,
+    ) -> tuple[Conversation, str, Answer]:
         """Задаёт последний вопрос заново, но с поиском, — «Проверить в интернете».
 
         Ответ заменяет прежний в разговоре: уточнение дальше должно опираться
@@ -207,7 +217,7 @@ class Asker:
             raise AskFailed("перепроверять нечего: разговор закончен")
         turn = conversation.turns.pop()
         try:
-            answer = self.ask(turn.question, conversation, on_delta, search=True)
+            answer = self.ask(turn.question, conversation, on_delta, search=True, on_search=on_search)
         except AskFailed:
             conversation.turns.append(turn)
             raise

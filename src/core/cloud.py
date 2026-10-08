@@ -481,6 +481,7 @@ class CloudClient:
         max_tokens: int,
         on_delta: Callable[[str], None] | None = None,
         search: bool = False,
+        on_search: Callable[[str], None] | None = None,
     ) -> Answer:
         """Ответ на вопрос потоком: on_delta получает текст по мере генерации.
 
@@ -491,7 +492,8 @@ class CloudClient:
         search — встроенный поиск gpt-oss у Groq, обязательный: по своей воле
         модель им почти не пользуется (6.10 не стала искать даже API Godot и
         выдала код третьей версии). В on_delta текст идёт как есть, со ссылками
-        вида 【2†L14-L17】; чистит их clean_answer.
+        вида 【2†L14-L17】; чистит их clean_answer. on_search получает запросы
+        модели к поиску по мере того, как она их отправляет.
         """
 
         def build(server: _Server) -> dict:
@@ -524,7 +526,7 @@ class CloudClient:
                 raise AskFailed(self.last_error)
             answer = Answer(text="", model=model, effort=effort)
             try:
-                _read_stream(response, answer, started, on_delta)
+                _read_stream(response, answer, started, on_delta, on_search)
             except requests.RequestException as exc:
                 self.last_error = "облако оборвало ответ: " + _describe(exc)
                 raise AskFailed(self.last_error) from exc
@@ -613,6 +615,7 @@ def _read_stream(
     answer: Answer,
     started: float,
     on_delta: Callable[[str], None] | None,
+    on_search: Callable[[str], None] | None = None,
 ) -> None:
     """Разбирает поток server-sent events в answer.
 
@@ -646,6 +649,11 @@ def _read_stream(
             if choice.get("finish_reason") == "length":
                 answer.truncated = True
             for tool in (choice.get("delta") or {}).get("executed_tools") or []:
+                query = _search_query(tool)
+                if query and query not in answer.queries:
+                    answer.queries.append(query)
+                    if on_search is not None:
+                        on_search(query)
                 _note_source(answer, tool)
             piece = (choice.get("delta") or {}).get("content")
             if not piece:
@@ -659,6 +667,25 @@ def _read_stream(
 
 #: Адрес страницы в выводе инструмента браузера: «L1: URL: https://…».
 _TOOL_URL = re.compile(r"URL:\s*(https?://\S+)")
+
+
+def _search_query(tool: dict) -> str:
+    """Запрос, с которым модель пошла в поиск; пусто — шаг не поисковый.
+
+    Аргументы шага — JSON (так в типах groq-python). Запрос есть только у
+    поиска: у открытия страницы там номер ссылки, у find — образец. Поэтому
+    смотрим на сам запрос, а не на имя шага, — его поле в типах SDK не
+    описано. Аргументы приходят уже с первым появлением шага, до вывода:
+    карточка показывает запрос, пока поиск ещё идёт.
+    """
+    args = tool.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args or "{}")
+        except ValueError:
+            return ""
+    query = args.get("query") if isinstance(args, dict) else None
+    return " ".join(query.split()) if isinstance(query, str) else ""
 
 
 def _note_source(answer: Answer, tool: dict) -> None:

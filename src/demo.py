@@ -231,6 +231,11 @@ CARD_SOURCES = [
     "https://pytorch.org/docs/stable/generated/torch.nn.BCEWithLogitsLoss.html",
     "https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html",
 ]
+#: Запросы, которые модель отправила бы в поиск при перепроверке: сама, по-английски.
+CARD_QUERIES = [
+    "PyTorch binary classification last layer sigmoid BCEWithLogitsLoss",
+    "BCEWithLogitsLoss pos_weight example",
+]
 
 
 def card_demo(cfg: Config) -> dict:
@@ -321,7 +326,9 @@ def card_demo(cfg: Config) -> dict:
         print(f"  проверяю в интернете: {question}")
         card.start(f"demo-{state['talk']}", state["turn"] + 1, question, True)
         hud.show_status(Status(Stage.POLISHING, "Ищу", cfg.ask.model))
-        later(3200, lambda: play(CARD_RECHECK, CARD_SOURCES))
+        for delay, query in zip((900, 2600), CARD_QUERIES):
+            later(delay, lambda query=query: card.searching(query))
+        later(4400, lambda: play(CARD_RECHECK, CARD_SOURCES))
 
     def closed() -> None:
         interrupt()

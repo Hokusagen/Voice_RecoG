@@ -110,6 +110,7 @@ class Controller(QObject):
 
         self.pipeline.asking.connect(self.card.start)
         self.pipeline.answer_delta.connect(self.card.feed)
+        self.pipeline.searching.connect(self.card.searching)
         self.pipeline.sources.connect(self.card.finish)
         self.pipeline.answer_failed.connect(self.card.fail)
         self.card.insert_requested.connect(self._on_card_insert)
