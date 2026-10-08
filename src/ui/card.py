@@ -228,6 +228,11 @@ class AnswerCard(QWidget):
         self._text.setFont(_sized(theme.detail_font(), 14, self._scale))
         self._text.document().setDocumentMargin(0)
         self._text.viewport().setAutoFillBackground(False)
+        # Своя наименьшая высота у поля — под стрелки полосы прокрутки, 53 px,
+        # почти три строки. Высоту карточки считает _wanted_height по тексту,
+        # и на ответе в строку раскладка, не влезая в свой минимум, сплющивала
+        # бы кнопки и шапку.
+        self._text.setMinimumHeight(1)
         layout.addWidget(self._text, 1)
         bar = self._text.verticalScrollBar()
         bar.actionTriggered.connect(self._unpin)
@@ -642,6 +647,9 @@ class AnswerCard(QWidget):
         if abs(doc.textWidth() - width) < 0.5:
             return int(doc.size().height())
         copy = doc.clone(self)
+        # Копия теряет вид первого абзаца — распорки нулевой высоты, — и
+        # короткий ответ мерился бы на строку выше: пустая строка под ним.
+        QTextCursor(copy).setBlockFormat(doc.begin().blockFormat())
         copy.setTextWidth(width)
         height = int(copy.size().height())
         copy.deleteLater()
