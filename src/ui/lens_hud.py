@@ -1,8 +1,9 @@
 """Плашка из стекла Линзы на системном композиторе Windows.
 
-Выбор первого круга лаборатории (design/glass): материал и появление Линзы,
-обход света по смене состояния, цвет итогов из «Сияния», думающий диск
-Острова. Выглядит как лабораторный WebGL, но собрана из двух слоёв:
+Выбор первого круга лаборатории (design/glass): материал Линзы, обход света
+по смене состояния, цвет итогов из «Сияния», думающий диск Острова; появление
+каплей — из design/glass/birth (9.10.2026), вместо прежней материализации.
+Выглядит как лабораторный WebGL, но собрана из двух слоёв:
 
 - живая середина — спрайт композитора: фон под окном, размытие и тон Apple
   в том же кадре, что и весь экран, поэтому при прокрутке она не отстаёт;
@@ -103,6 +104,14 @@ VOICE_ROOM = 6.0               # низ окна не ближе к шуму
 VOICE_FLOOR0 = -60.0
 VOICE_FLOOR_RISE = 1.0         # дБ/с: вниз пол идёт сразу, вверх медленно — речь его не утянет
 
+#: Появление — капля (design/glass/birth, выбор 9.10.2026): из точки набухает до
+#: высоты пилюли с упругим перелётом и растекается вширь. drop сначала
+#: округляется до диска и с 0.2 с растекается; drop-single растёт вверх и вширь
+#: сразу. Пружины (response, damping) — те же, что в лаборатории, birth.js.
+DROP_RISE = {"drop": (0.32, 0.6), "drop-single": (0.36, 0.6)}
+DROP_SPREAD = {"drop": (0.5, 0.78), "drop-single": (0.46, 0.76)}
+DROP_SPREAD_DELAY = 0.2
+
 #: Думающий диск (island.js): лепестки по кругу и их глубина в долях радиуса.
 LOBES = (5, 7, 4)
 LOBE_AMP = (0.1, 0.07, 0.115)
@@ -200,9 +209,14 @@ class _VoiceGain:
 class _Motion:
     """Пружины плашки — перенос frame() из lens.js, StatusFlash из kit.js и морфа island.js."""
 
-    def __init__(self, gain: _VoiceGain | None = None) -> None:
+    def __init__(self, gain: _VoiceGain | None = None, appear: str = "drop") -> None:
+        self.appear = appear if appear in DROP_RISE else "drop"
         self.mat = Spring(0.0, 0.45, 0.8)
         self.w = Spring(BASE_W, 0.5, 0.85)
+        self.drop = Spring(PILL_H / 2.0, *DROP_RISE[self.appear])
+        """Полувысота капли при появлении, px макета."""
+        self.drop_at: float | None = None
+        """Когда началось появление каплей; None — капля уже стала пилюлей."""
         self.shake = Spring(0.0, 0.3, 0.35)
         self.think = Spring(0.0, 0.6, 1.0)
         self.tint = Spring(0.0, 0.4, 1.0)
@@ -261,8 +275,12 @@ class _Motion:
                 self.changed_at = now
                 self.sweep_at = now
                 if from_hidden:
-                    # Из невидимого ширина сразу под текст: появление — рост линзы, не растяжение.
-                    self.w.snap(tgt.width)
+                    # Из невидимого — капля: растёт сама форма, а стекло у неё сразу
+                    # целиком, а не проступает, как у прежней материализации.
+                    self.drop_at = now
+                    self.drop.snap(0.0)
+                    self.mat.snap(1.0)
+                    self.w.tune(*DROP_SPREAD[self.appear]).snap(PILL_H if self.appear == "drop" else 0.0)
                     self.green.snap(0.0)
                     self.red.snap(0.0)
                 fits_now = self.w.value >= tgt.width - FIT_SLACK
@@ -296,8 +314,18 @@ class _Motion:
         mc = clamp01(m)
 
         if shown:
-            self.w.set(tgt.width)
+            # Базовая капля сначала округляется до диска и только потом растекается.
+            hold = self.drop_at is not None and self.appear == "drop" and now - self.drop_at < DROP_SPREAD_DELAY
+            self.w.set(PILL_H if hold else tgt.width)
         w = self.w.step(dt)
+        hh = PILL_H / 2.0
+        if self.drop_at is not None:
+            hh = max(0.0, self.drop.set(PILL_H / 2.0).step(dt))
+            if (now - self.drop_at > DROP_SPREAD_DELAY and abs(hh - PILL_H / 2.0) < 0.05
+                    and abs(self.drop.velocity) < 0.5 and abs(w - self.w.target) < 0.25
+                    and abs(self.w.velocity) < 2.0):
+                self.drop_at = None
+                self.w.tune(0.5, 0.85)
         if self.shake_pending and tgt.stage is Stage.ERROR and (
             abs(w - tgt.width) < 24.0 or now - self.changed_at > 0.35
         ):
@@ -344,6 +372,13 @@ class _Motion:
         scale = 0.96 + 0.04 * m
         h = PILL_H * scale * S
         ww = max(w, PILL_H) * scale * S
+        if self.drop_at is not None:
+            # Пока капля набухает, она круглая и не шире своей высоты; вширь
+            # растекается по мере того, как набухла.
+            k = clamp01(hh / (PILL_H / 2.0))
+            half_w = max(hh, w / 2.0 * (smooth(0.0, 1.0, k) if self.appear == "drop" else 1.0))
+            h = 2.0 * hh * scale * S
+            ww = 2.0 * half_w * scale * S
         cx = view[0] / 2.0 + dx * S
         cy = view[1] / 2.0
 
@@ -355,6 +390,11 @@ class _Motion:
         fade = mc if shown else mc * mc
         amp = 41.0 * thick * breath * fade * (1.0 - 0.25 * f) * S
         bevel = 13.0 * thick * (0.35 + 0.65 * mc) * (1.0 - 0.3 * f) * S
+        if self.drop_at is not None:
+            # Маленькая капля — тонкое стекло: преломление растёт вместе с ней, а
+            # кромка не толще её половины — иначе съела бы форму целиком.
+            amp *= clamp01(hh / (PILL_H / 2.0)) ** 1.5
+            bevel = min(bevel, 0.465 * hh * S)
 
         sw = clamp01((now - self.sweep_at) / SWEEP_S)
         ang = LIGHT0 + 2.0 * math.pi * ease_in_out(sw)
@@ -386,7 +426,8 @@ class _Motion:
 
         # ---- живая середина: только в покое и когда композитор её уже показал
         settled = (shown and mc > 0.999 and abs(self.w.velocity) < 2.0 and abs(w - tgt.width) < 0.25
-                   and abs(dx) < 0.05 and abs(self.shake.velocity) < 1.0 and f < 0.001 and tint < 0.002)
+                   and abs(dx) < 0.05 and abs(self.shake.velocity) < 1.0 and f < 0.001 and tint < 0.002
+                   and self.drop_at is None)
         geometry = _Geometry(cx - ww / 2.0, cy - h / 2.0, ww, h, settled)
         if settled and applied_key == geometry.key():
             if self.applied_since is None:
@@ -867,7 +908,7 @@ class LensHud(QObject):
             grabber.close()
 
     def _render_loop(self) -> None:
-        motion = _Motion(self._voice_gain)
+        motion = _Motion(self._voice_gain, self.cfg.hud_appear)
         params = _Params()
         p = self._params_static(params)
         started = last = time.perf_counter()
