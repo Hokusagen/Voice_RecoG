@@ -19,6 +19,16 @@
 сервер, модель и глубина раздумий; сервер без url — тот же, что у правки.
 Вопросы идут через тот же Asker, что и в приложении: мерим код, который
 работает, а не его копию.
+
+Промпт — часть набора, как и вопросы. Если рядом лежит prompt.txt, все
+кандидаты отвечают с ним и без сведений о человеке: новый кандидат ложится к
+старым ответам, только если спрашивали его так же, как их.
+
+GigaChat пускает не по ключу, а по токену на полчаса, который выдают в обмен
+на ключ авторизации: у такого кандидата "auth": "gigachat", а сам ключ — в
+gigachat_key.txt рядом. Сертификат у Сбера от НУЦ Минцифры, которого нет в
+certifi, — его корневой сертификат кладётся рядом же, russian_trusted_root_ca.pem,
+и добавляется к доверенным только в этом процессе.
 """
 
 from __future__ import annotations
@@ -30,7 +40,11 @@ import random
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
+
+import certifi
+import requests
 
 from config import AskConfig, Config, app_data_dir
 from core.ask import Asker, AskFailed, Turn
@@ -40,6 +54,9 @@ ROOT = app_data_dir() / "ask_eval"
 QUESTIONS = ROOT / "questions.txt"
 CANDIDATES = ROOT / "candidates.json"
 RUNS = ROOT / "runs"
+PROMPT = ROOT / "prompt.txt"
+GIGACHAT_KEY = ROOT / "gigachat_key.txt"
+RUSSIAN_CA = ROOT / "russian_trusted_root_ca.pem"
 
 #: Стартовый набор кандидатов: то, что бесплатно есть на ключе Groq. Чужие
 #: серверы дописываются в файл руками: url, api_key, model, effort.
@@ -149,8 +166,87 @@ def make_asker(cfg: Config, spec: dict) -> Asker:
         reasoning_effort=spec.get("effort", ""),
         max_tokens=int(spec.get("max_tokens", cfg.ask.max_tokens)),
         keep_audio=False,
+        # Замер — о том, что модель знает сама; поиск у каждого сервера свой
+        # или его нет вовсе, и с ним сравнивали бы уже не модели.
+        web_search=False,
     )
+    if PROMPT.exists():
+        ask = dataclasses.replace(ask, system_prompt=PROMPT.read_text(encoding="utf-8"), about="")
     return Asker(ask, CloudClient(cfg.cloud, cfg.llm, ask))
+
+
+# ---------- GigaChat ----------
+
+#: Токен живёт 30 минут; берём новый с запасом, чтобы он не истёк посреди ответа.
+_TOKEN_TTL_S = 20 * 60
+
+
+def key_of(spec: dict) -> str:
+    """Ключ кандидата; у GigaChat — ключ авторизации, общий для всех его моделей."""
+    key = spec.get("api_key", "").strip()
+    if not key and spec.get("auth") == "gigachat" and GIGACHAT_KEY.exists():
+        key = GIGACHAT_KEY.read_text(encoding="utf-8").strip()
+    return key.removeprefix("Basic ").strip()
+
+
+def gigachat_token(spec: dict) -> str:
+    """Обменивает ключ авторизации на токен доступа: Bearer у GigaChat — он, а не ключ."""
+    try:
+        response = requests.post(
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+            headers={
+                "Authorization": f"Basic {key_of(spec)}",
+                # Сбер требует уникальный номер на каждый запрос токена.
+                "RqUID": str(uuid.uuid4()),
+                "Accept": "application/json",
+            },
+            data={"scope": spec.get("scope", "GIGACHAT_API_PERS")},
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise AskFailed(f"GigaChat не выдал токен: {exc}") from exc
+    if response.status_code != 200:
+        raise AskFailed(f"GigaChat не выдал токен: {response.status_code} {response.text[:120]}")
+    return response.json()["access_token"]
+
+
+def trust_russian_ca() -> None:
+    """certifi плюс корневой сертификат НУЦ Минцифры — только для этого процесса.
+
+    Системное хранилище не трогаем: доверие к этому центру нужно замеру, а не
+    всей машине. requests берёт набор из REQUESTS_CA_BUNDLE, если verify не
+    задан явно, — так его увидит и CloudClient, ничего о Сбере не знающий.
+    """
+    if not RUSSIAN_CA.exists():
+        print(f"Нет {RUSSIAN_CA.name}: без него Python не доверит серверам GigaChat")
+        return
+    bundle = ROOT / "ca_bundle.pem"
+    bundle.write_text(
+        Path(certifi.where()).read_text(encoding="utf-8") + "\n" + RUSSIAN_CA.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    os.environ["REQUESTS_CA_BUNDLE"] = str(bundle)
+
+
+class Askers:
+    """Кандидаты и их Asker; у GigaChat Asker пересобирается со свежим токеном."""
+
+    def __init__(self, cfg: Config, chosen: dict[str, dict]) -> None:
+        self.cfg = cfg
+        self.chosen = chosen
+        self._askers: dict[str, Asker] = {}
+        self._issued: dict[str, float] = {}
+
+    def get(self, name: str) -> Asker:
+        spec = self.chosen[name]
+        if spec.get("auth") != "gigachat":
+            if name not in self._askers:
+                self._askers[name] = make_asker(self.cfg, spec)
+            return self._askers[name]
+        if time.monotonic() - self._issued.get(name, -_TOKEN_TTL_S) >= _TOKEN_TTL_S:
+            self._askers[name] = make_asker(self.cfg, dict(spec, api_key=gigachat_token(spec)))
+            self._issued[name] = time.monotonic()
+        return self._askers[name]
 
 
 #: «…сброс через 7 с» в тексте отказа по лимиту.
@@ -236,13 +332,15 @@ def cmd_run(names: list[str]) -> int:
     chosen = {name: candidates[name] for name in (names or candidates)}
     # Свой сервер без ключа пропускаем: иначе вопрос ушёл бы на серверы
     # правки с чужим именем модели и записался бы в прогон отказом.
-    keyless = [name for name, spec in chosen.items() if spec.get("url") and not spec.get("api_key", "").strip()]
+    keyless = [name for name, spec in chosen.items() if spec.get("url") and not key_of(spec)]
     for name in keyless:
         print(f"Пропускаю «{name}»: нет api_key")
         del chosen[name]
     if not chosen:
         return 1
-    askers = {name: make_asker(cfg, spec) for name, spec in chosen.items()}
+    if any(spec.get("auth") == "gigachat" for spec in chosen.values()):
+        trust_russian_ca()
+    askers = Askers(cfg, chosen)
     chains = read_questions()
     # Спрашиваем только то, на что ответа ещё нет: у Gemini бесплатно двадцать
     # запросов в сутки, и повторять готовое значило бы недобрать новое.
@@ -258,8 +356,14 @@ def cmd_run(names: list[str]) -> int:
         # лимиты у Groq на модель, и так они тратятся равномерно.
         for number, chain in enumerate(chains, 1):
             print(f"[{number}/{len(chains)}] {chain[0][:70]}")
-            for name, asker in askers.items():
+            for name in chosen:
                 if name in spent:
+                    continue
+                try:
+                    asker = askers.get(name)
+                except AskFailed as exc:
+                    spent.add(name)
+                    print(f"    {name}: {exc} — до следующего запуска")
                     continue
                 # Каждый разговор — с чистого листа, как после закрытой карточки.
                 asker.close()
