@@ -1,16 +1,17 @@
-/* Появление пилюли «Слушаю»: шесть вариантов против нынешней материализации.
+/* Появление пилюли «Слушаю», второй круг: Капля и Слияние.
  *
  * Отзыв 8.10.2026: пилюля «появляется просто никак — материализуется»; пусть
  * вылетает из низа экрана или красиво рождается на своём месте. Место прежнее:
- * снизу по центру, 96 px над панелью задач (ui.hud_margin). Варианты сильно
- * разные, в каждом одно движение; уход у всех нынешний — смотрим только
- * появление.
+ * снизу по центру, 96 px над панелью задач (ui.hud_margin). Из шести вариантов
+ * первого круга 9.10 выбраны Капля и Слияние — «давай их развивать»: здесь они
+ * как были и по три развития, в каждом меняется что-то одно. Уход у всех
+ * нынешний — смотрим только появление.
  *
  * Стекло — числа Линзы, как в src/ui/lens_shader.py: материализация m гасит
  * преломление, размытие, вуаль, блик и тень, а не прозрачность формы. Голос
  * внутри — Шёлк в паузе, теми же числами, что в voice/ и в приложении. Форма —
- * до шести капсул, слитых гладким минимумом: из них собираются капли,
- * перемычки и столб жидкости.
+ * до двенадцати капсул, слитых гладким минимумом: из них собираются капли и
+ * перемычки между ними.
  */
 (function () {
   'use strict';
@@ -174,7 +175,7 @@ uniform sampler2D uScene;
 uniform vec2 uRes;       // холст, px устройства
 uniform float uPx;       // px устройства на px макета
 uniform vec2 uTile;      // плитка, px макета
-uniform vec4 uPrim[6];   // капсулы формы: центр xy, полуразмеры zw
+uniform vec4 uPrim[12];  // капсулы формы: центр xy, полуразмеры zw
 uniform int uPrimN;
 uniform float uK;        // гладкость слияния капсул
 uniform float uClipY;    // ниже — панель задач: стекло выходит из-за неё
@@ -236,7 +237,7 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
 float shape(vec2 p) {
   float d = 1e5;
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 12; i++) {
     if (i >= uPrimN) break;
     vec4 c = uPrim[i];
     float di = sdRoundBox(p - c.xy, c.zw, min(c.z, c.w));
@@ -417,64 +418,33 @@ void main() {
   // Кромка не толще половины самой тонкой части формы, иначе она съедает её целиком.
   const bevelFor = (half) => Math.min(13, 0.46 * Math.max(half, 0.5));
 
+  // Капля первого круга: набухает, упруго округляется до диска, растекается вширь.
+  function dropAt(t) {
+    const hh = Math.max(0, spring(t, 0, CH / 2, 0.32, 0.6));
+    const w = spring(t, CH, CW, 0.5, 0.78, 0.2);
+    const hw = Math.max(hh, (w / 2) * smooth(0, 1, hh / (CH / 2)));
+    return { hw, hh, k: clamp01(hh / (CH / 2)) };
+  }
+
+  // Капли «Слияния»: x и y от центра пилюли и радиус, px макета.
+  const MERGE = [[-92, 8, 8], [-44, -16, 11], [6, 14, 13], [50, -12, 10], [94, 6, 8]];
+  // «Конденсат»: мелкие капли в случайных местах, но всегда в одних и тех же — сид
+  // постоянный, иначе раскадровку не сравнить с показом живьём.
+  const DEW = (() => {
+    let seed = 20261009;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    return Array.from({ length: 11 }, () => [mix(-125, 125, rand()), mix(-30, 30, rand()), mix(3, 7.5, rand()), 0.12 * rand()]);
+  })();
+  // «Цепочка»: капли по оси пилюли; к концу крайние подтягиваются внутрь (×0.8),
+  // чтобы круги радиусом 28 не вылезли за концы капсулы.
+  const CHAIN = [-90, -60, -30, 0, 30, 60, 90];
+
   const VARIANTS = [
     {
-      id: 'now', name: 'Сейчас',
-      line: 'Материализация из приложения: форма на месте сразу, стекло проступает пружиной 0.45 с, масштаб 0.96 → 1.',
-      at(t) {
-        const m = spring(t, 0, 1, 0.45, 0.8);
-        const mc = clamp01(m);
-        const s = 0.96 + 0.04 * m;
-        return rest({
-          prims: [pill(C[0], C[1], (CW / 2) * s, (CH / 2) * s)],
-          glass: [mc, 41 * mc, 13 * (0.35 + 0.65 * mc), 2.4],
-          silk: [smooth(0.6, 1, mc), 1e4, 0],
-        });
-      },
-    },
-    {
-      id: 'rise', name: 'Всплытие',
-      line: 'Выныривает из-за панели задач и поднимается на место с лёгким перелётом. На скорости вытягивается, на месте округляется.',
-      at(t) {
-        const y = (u) => spring(u, EDGE + CH / 2 + 6, C[1], 0.55, 0.72);
-        const e = clamp01(Math.abs(speed(y, t)) / 1800) * 0.14;
-        return rest({
-          prims: [pill(C[0], y(t), (CW / 2) * (1 - e * 0.5), (CH / 2) * (1 + e))],
-          clipY: EDGE,
-          silk: [smooth(0.08, 0.4, t), 1e4, 0],
-        });
-      },
-    },
-    {
-      id: 'pull', name: 'Отрыв',
-      line: 'Край панели вспухает, капля тянется вверх на перемычке, перемычка рвётся — и капля растекается в капсулу.',
-      at(t) {
-        const head = smooth(0, 0.25, t);
-        const y = spring(t, EDGE - 4, C[1], 0.62, 0.76, 0.05);
-        const r = 5 + 15 * head;
-        const hw = t < 0.25 ? r : spring(t, 20, CW / 2, 0.55, 0.62, 0.25);
-        const hh = t < 0.25 ? r : spring(t, 20, CH / 2, 0.42, 0.5, 0.25);
-        const prims = [pill(C[0], y, hw, hh)];
-        // Перемычка — вертикальная капсула от края до капли; тоньше 0.6 px — порвалась.
-        const neck = 9 * smooth(0, 0.08, t) * (1 - smooth(0.14, 0.3, t));
-        if (neck > 0.6) prims.push(pill(C[0], (EDGE + y) / 2, neck, (EDGE - y) / 2 + neck));
-        const bulge = smooth(0, 0.06, t) * (1 - smooth(0.16, 0.42, t));
-        if (bulge > 0.05) prims.push(pill(C[0], EDGE + 2, 34 * bulge, 10 * bulge));
-        return rest({
-          prims, k: 5, clipY: EDGE,
-          glass: [1, 41 * clamp01(hh / 28), bevelFor(Math.min(hw, hh)), 2.4],
-          silk: [smooth(0.35, 0.7, t), 1e4, 0],
-        });
-      },
-    },
-    {
       id: 'drop', name: 'Капля',
-      line: 'На месте пилюли набухает капля, упруго округляется до диска и растекается вширь в капсулу.',
+      line: 'Как в первом круге: капля набухает, упруго округляется до диска и растекается вширь в капсулу.',
       at(t) {
-        const hh = Math.max(0, spring(t, 0, CH / 2, 0.32, 0.6));
-        const w = spring(t, CH, CW, 0.5, 0.78, 0.2);
-        const hw = Math.max(hh, (w / 2) * smooth(0, 1, hh / (CH / 2)));
-        const k = clamp01(hh / (CH / 2));
+        const { hw, hh, k } = dropAt(t);
         return rest({
           prims: [pill(C[0], C[1], hw, hh)],
           glass: [smooth(0, 0.06, t), 41 * Math.pow(k, 1.5), bevelFor(hh), 2.4],
@@ -483,14 +453,61 @@ void main() {
       },
     },
     {
-      id: 'merge', name: 'Слияние',
-      line: 'Пять капель проступают вокруг места пилюли, сбегаются и сливаются в одну капсулу — Капли наоборот.',
+      id: 'lens', name: 'Капля-линза',
+      line: 'Маленькая капля — толстая линза и крупно увеличивает фон. Растекаясь, она сплющивается и успокаивается до стекла пилюли.',
       at(t) {
-        const DROPS = [[-92, 8, 8], [-44, -16, 11], [6, 14, 13], [50, -12, 10], [94, 6, 8]];
+        const hh0 = Math.max(0, spring(t, 0, CH / 2, 0.32, 0.6));
+        const w = (u) => spring(u, CH, CW, 0.5, 0.78, 0.2);
+        // Объём сохраняется: пока капля быстро растекается, она чуть ниже.
+        const squash = clamp01(Math.abs(speed(w, t)) / 1400) * 0.12;
+        const hh = hh0 * (1 - squash);
+        const hw = Math.max(hh, (w(t) / 2) * smooth(0, 1, hh0 / (CH / 2)));
+        // Купол: кромка во весь радиус и сильное преломление, без матовости —
+        // чистая линза; к покою — паспортная толщина и размытие Линзы.
+        const relax = smooth(0.2, 0.65, t);
+        return rest({
+          prims: [pill(C[0], C[1], hw, hh)],
+          glass: [smooth(0, 0.06, t), mix(58, 41, relax) * clamp01(hh0 / (CH / 2)),
+            mix(hh * 0.95, bevelFor(hh), relax), mix(0.8, 2.4, relax)],
+          silk: [smooth(0.35, 0.65, t), 1e4, 0],
+        });
+      },
+    },
+    {
+      id: 'thread', name: 'Капля с нитью',
+      line: 'Голос рождается вместе с каплей: в диске нить шёлка — короткий узелок, и она разворачивается, пока капля растекается.',
+      at(t) {
+        const { hw, hh, k } = dropAt(t);
+        return rest({
+          prims: [pill(C[0], C[1], hw, hh)],
+          glass: [smooth(0, 0.06, t), 41 * Math.pow(k, 1.5), bevelFor(hh), 2.4],
+          silk: [smooth(0.04, 0.16, t), Math.max(0, hw - 12), 0],
+        });
+      },
+    },
+    {
+      id: 'single', name: 'Капля одним движением',
+      line: 'Без двух фаз: капля растёт сразу и вверх, и вширь — высота с упругим перелётом, ширина течёт следом. Быстрее, около 0.4 с.',
+      at(t) {
+        const hh = Math.max(0, spring(t, 0, CH / 2, 0.36, 0.6));
+        const hw = Math.max(hh, spring(t, 0, CW / 2, 0.46, 0.76));
+        const k = clamp01(hh / (CH / 2));
+        return rest({
+          prims: [pill(C[0], C[1], hw, hh)],
+          glass: [smooth(0, 0.05, t), 41 * Math.pow(k, 1.5), bevelFor(hh), 2.4],
+          silk: [smooth(0.2, 0.45, t), 1e4, 0],
+        });
+      },
+    },
+    {
+      id: 'merge', name: 'Слияние',
+      line: 'Как в первом круге: пять капель проступают вокруг места пилюли, сбегаются и сливаются в капсулу.',
+      at(t) {
         const conv = spring(t, 0, 1, 0.55, 0.85, 0.12);
-        const prims = DROPS.map(([x, y, r], i) => {
+        const prims = MERGE.map(([x, y, r], i) => {
           const s = clamp01(spring(t, 0, 1, 0.3, 0.7, 0.03 * i));
-          return pill(C[0] + mix(x, x * 0.45, conv), C[1] + mix(y, 0, conv), 0, 0).map((v, j) => (j < 2 ? v : Math.min(26, r * s * mix(1, 2, conv))));
+          const rr = Math.min(26, r * s * mix(1, 2, conv));
+          return [C[0] + mix(x, x * 0.45, conv), C[1] + mix(y, 0, conv), rr, rr];
         });
         const grow = clamp01(spring(t, 0, 1, 0.5, 0.8, 0.32));
         if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
@@ -502,35 +519,69 @@ void main() {
       },
     },
     {
-      id: 'land', name: 'Приземление',
-      line: 'Опускается на экран из глубины: крупнее, мягче, тень далеко. Касание — и по фону расходится кольцо ряби.',
+      id: 'dew', name: 'Конденсат',
+      line: 'Одиннадцать мелких капель выпадают на экран, как роса на холодном стекле; ближние к центру сливаются первыми, дальние подтягиваются следом.',
       at(t) {
-        const z = Math.max(0, spring(t, 1, 0, 0.5, 0.92));
-        const s = 1 + 0.12 * z;
-        const after = t - 0.3;
-        const ripple = after > 0
-          // Сила 7 px давала смещение в полтора пикселя — кольца не было видно.
-          ? [150 * Math.pow(after / 0.7, 0.7), 16 * Math.exp(-after / 0.3), 12 + 20 * after]
-          : [0, 0, 1];
+        const prims = DEW.map(([x, y, r, delay]) => {
+          const s = clamp01(spring(t, 0, 1, 0.22, 0.8, delay));
+          const near = Math.hypot(x / 125, y / 30) / Math.SQRT2;  // 0 — в центре, ~1 — с краю
+          const conv = spring(t, 0, 1, 0.5, 0.85, 0.14 + 0.16 * near);
+          const rr = Math.min(24, r * s * mix(1, 3.2, clamp01(conv)));
+          return [C[0] + mix(x, x * 0.4, conv), C[1] + mix(y, 0, conv), rr, rr];
+        });
+        const grow = clamp01(spring(t, 0, 1, 0.5, 0.8, 0.36));
+        if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
+        const conv0 = clamp01(spring(t, 0, 1, 0.5, 0.85, 0.14));
         return rest({
-          prims: [pill(C[0], C[1], (CW / 2) * s, (CH / 2) * s)],
-          glass: [smooth(0, 0.12, t), 41, 13, 2.4 + 5 * z],
-          shadow: [8 + 26 * z, 30 + 36 * z, 0.035 * (1 - 0.3 * z), 1 + 10 * z],
-          ripple,
-          silk: [smooth(0.25, 0.55, t), 1e4, 0],
+          prims, k: mix(2.5, 0.01, smooth(0.8, 1.15, t)),
+          glass: [smooth(0, 0.05, t), mix(10, 41, conv0), mix(2.5, 13, conv0), 2.4],
+          silk: [smooth(0.5, 0.85, t), 1e4, 0],
         });
       },
     },
     {
-      id: 'seam', name: 'Шов',
-      line: 'Сначала нить шёлка прочерчивается от середины, потом стекло раскрывается вокруг неё, как веко. Голос рождает пилюлю.',
+      id: 'chain', name: 'Цепочка',
+      line: 'Семь капель в ряд по оси пилюли набухают и сливаются от середины к краям, как застёжка; нить шёлка тянется по слитой части.',
       at(t) {
-        const reveal = spring(t, 0, 92, 0.38, 0.95);
-        const h = Math.max(0, spring(t, 0, CH, 0.42, 0.68, 0.24));
+        const prims = CHAIN.map((x, i) => {
+          const order = Math.abs(i - 3);                          // 0 — середина
+          const s = clamp01(spring(t, 0, 1, 0.24, 0.75, 0.025 * order));
+          const r0 = 9 - order;                                   // 9, 8, 7, 6 px
+          const swell = clamp01(spring(t, 0, 1, 0.34, 0.7, 0.1 + 0.075 * order));
+          const r = r0 * s + (CH / 2 - r0) * swell;
+          return [C[0] + mix(x, x * 0.8, swell), C[1] + (order % 2 ? 2 : -1.5) * (1 - swell), r, r];
+        });
+        // Между кругами по краям остаются выемки — их заливает сама капсула.
+        const grow = smooth(0.42, 0.68, t);
+        if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
+        const mid = clamp01(spring(t, 0, 1, 0.34, 0.7, 0.1));
         return rest({
-          prims: [pill(C[0], C[1], CW / 2, h / 2)],
-          glass: [smooth(0.24, 0.32, t), 41 * Math.pow(clamp01(h / CH), 1.5), bevelFor(h / 2), 2.4],
-          silk: [1, reveal, 1 - smooth(0.3, 0.5, t)],
+          prims, k: mix(4, 0.01, smooth(0.75, 1.1, t)),
+          glass: [smooth(0, 0.05, t), mix(14, 41, mid), mix(4, 13, mid), 2.4],
+          silk: [smooth(0.1, 0.3, t), 6 + 86 * clamp01(spring(t, 0, 1, 0.42, 0.9, 0.12)), 0],
+        });
+      },
+    },
+    {
+      id: 'halves', name: 'Две половины',
+      line: 'Две капли рождаются на концах будущей пилюли и стекаются навстречу; встретившись, качнутся одной волной.',
+      at(t) {
+        const meet = 0.3;
+        // Волна после встречи — продолжение того же движения, а не новое.
+        const wob = t > meet ? 0.07 * Math.exp(-(t - meet) / 0.16) * Math.sin((2 * Math.PI * (t - meet)) / 0.2) : 0;
+        const hh = Math.max(0, spring(t, 0, CH / 2, 0.3, 0.55)) * (1 + wob);
+        const d = spring(t, 78, CW / 4, 0.42, 0.8, 0.1);         // центр половины: 78 → 50
+        const hw = Math.max(hh, spring(t, 0, CW / 4, 0.42, 0.8, 0.1));
+        const prims = [pill(C[0] - d, C[1], hw, hh), pill(C[0] + d, C[1], hw, hh)];
+        // Половины сходятся скруглёнными концами, и посередине осталась бы
+        // перетяжка: её заливает капсула, которая растёт из места встречи.
+        const join = smooth(0.22, 0.42, t);
+        if (join > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * join, hh * join));
+        const k = clamp01(hh / (CH / 2));
+        return rest({
+          prims, k: mix(5, 0.01, smooth(0.6, 0.9, t)),
+          glass: [smooth(0, 0.05, t), 41 * Math.pow(k, 1.5), bevelFor(hh), 2.4],
+          silk: [smooth(0.3, 0.55, t), 1e4, 0],
         });
       },
     },
@@ -589,7 +640,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
       const info = gl.getActiveUniform(prog, i);
       u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(prog, info.name);
     }
-    return { gl, canvas, prog, u, textures: {}, prim: new Float32Array(24) };
+    return { gl, canvas, prog, u, textures: {}, prim: new Float32Array(48) };
   }
 
   // Фон — сцена в рабочей области и панель задач под ней; рисуется один раз на
@@ -661,9 +712,9 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     set1('uPx', px);
     set2('uTile', TILE_W, TILE_H);
     r.prim.fill(0);
-    st.prims.slice(0, 6).forEach((pr, i) => r.prim.set(pr, i * 4));
+    st.prims.slice(0, 12).forEach((pr, i) => r.prim.set(pr, i * 4));
     if (u.uPrim) gl.uniform4fv(u.uPrim, r.prim);
-    if (u.uPrimN) gl.uniform1i(u.uPrimN, Math.min(6, st.prims.length));
+    if (u.uPrimN) gl.uniform1i(u.uPrimN, Math.min(12, st.prims.length));
     set1('uK', st.k);
     set1('uClipY', st.clipY);
     set4('uGlass', st.glass);
@@ -704,7 +755,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     if (only && !only.includes(v.id)) return;
     const row = document.createElement('section');
     row.className = 'row';
-    row.innerHTML = `<div class="meta"><span class="num">${String(i).padStart(2, '0')}</span><h2>${v.name}</h2><p>${v.line}</p></div>` +
+    row.innerHTML = `<div class="meta"><span class="num">${String(i + 1).padStart(2, '0')}</span><h2>${v.name}</h2><p>${v.line}</p></div>` +
       '<div class="frames"></div><div class="live"></div>';
     const frames = FRAMES.map((t) => {
       const fig = document.createElement('div');
