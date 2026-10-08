@@ -3,26 +3,29 @@
  * Отзыв 8.10.2026: пилюля «появляется просто никак — материализуется»; пусть
  * вылетает из низа экрана или красиво рождается на своём месте. Место прежнее:
  * снизу по центру, 96 px над панелью задач (ui.hud_margin). Из шести вариантов
- * первого круга 9.10 выбраны Капля и Слияние — «давай их развивать»: здесь они
- * как были и по три развития, в каждом меняется что-то одно. Уход у всех
- * нынешний — смотрим только появление.
+ * первого круга 9.10 выбраны Капля и Слияние — «давай их развивать». Капля —
+ * как была и три развития; её пока не трогаем. Слияние второго круга
+ * отвергнуто: площадь капель не сходилась с пилюлей, а капли летели друг в
+ * друга — «нежидкостное движение». Третий заход — ниже, у констант. Уход у
+ * всех нынешний — смотрим только появление.
  *
  * Стекло — числа Линзы, как в src/ui/lens_shader.py: материализация m гасит
  * преломление, размытие, вуаль, блик и тень, а не прозрачность формы. Голос
  * внутри — Шёлк в паузе, теми же числами, что в voice/ и в приложении. Форма —
- * до двенадцати капсул, слитых гладким минимумом: из них собираются капли и
- * перемычки между ними.
+ * до шестнадцати капсул, каждая со своим поворотом, слитых гладким минимумом:
+ * из них собираются капли и перемычки между ними.
  */
 (function () {
   'use strict';
 
   const TILE_W = 520;
-  const TILE_H = 240;
-  const EDGE = 204;                 // верх панели задач: низ рабочей области
+  const TILE_H = 300;               // над пилюлей — место, откуда стекают капли
+  const EDGE = 264;                 // верх панели задач: низ рабочей области
   const C = [260, EDGE - 96 - 28];  // центр пилюли: 96 px над панелью, как в приложении
   const CW = 200;                   // «Слушаю» — капсула без надписей (lens_hud.LISTEN_W)
   const CH = 56;
-  const CROP = [150, 24, 220, 216]; // кадр раскадровки: пилюля и край панели под ней
+  // Кадр раскадровки: пилюля и край панели под ней; кому тесно — свой кадр.
+  const CROP = [150, C[1] - 56, 220, TILE_H - (C[1] - 56)];
   const FRAMES = [0.05, 0.12, 0.2, 0.3, 0.45, 1.0];
   const HOLD = 2.4;                 // живьём: сколько стоит, прежде чем уйти
   const LOOP = 3.6;
@@ -175,7 +178,8 @@ uniform sampler2D uScene;
 uniform vec2 uRes;       // холст, px устройства
 uniform float uPx;       // px устройства на px макета
 uniform vec2 uTile;      // плитка, px макета
-uniform vec4 uPrim[12];  // капсулы формы: центр xy, полуразмеры zw
+uniform vec4 uPrim[16];  // капсулы формы: центр xy, полуразмеры zw
+uniform float uPrimA[16]; // и поворот каждой, рад
 uniform int uPrimN;
 uniform float uK;        // гладкость слияния капсул
 uniform float uClipY;    // ниже — панель задач: стекло выходит из-за неё
@@ -183,6 +187,7 @@ uniform vec4 uGlass;     // материализация m, преломлени
 uniform vec4 uShadow;    // сдвиг тени вниз, спад, сила, мягкость края формы (px устройства)
 uniform vec4 uRipple;    // кольцо ряби: расстояние от кромки пилюли, сила px, ширина px
 uniform vec4 uSilk;      // шёлк: виден, полудлина прорисовки, шёлк поверх фона без стекла
+uniform float uSilkA;    // поворот нити вместе с вращающимся телом
 uniform vec2 uC;         // центр и размер пилюли в покое
 uniform vec2 uCap;
 uniform float uTone;     // 0 — тёмный фон под пилюлей, 1 — светлый
@@ -237,10 +242,13 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
 float shape(vec2 p) {
   float d = 1e5;
-  for (int i = 0; i < 12; i++) {
+  for (int i = 0; i < 16; i++) {
     if (i >= uPrimN) break;
     vec4 c = uPrim[i];
-    float di = sdRoundBox(p - c.xy, c.zw, min(c.z, c.w));
+    vec2 q = p - c.xy;
+    float a = uPrimA[i];
+    if (a != 0.0) { float ca = cos(a), sa = sin(a); q = vec2(ca * q.x + sa * q.y, -sa * q.x + ca * q.y); }
+    float di = sdRoundBox(q, c.zw, min(c.z, c.w));
     d = i == 0 ? di : smin(d, di, uK);
   }
   return d;
@@ -302,6 +310,7 @@ vec3 silkOver(vec3 col, Silk s, float tone, vec3 core) {
   vec3 onLight = mix(col, ink, pow(s.d, 1.6) * 0.7);
   return mix(onDark, onLight, tone);
 }
+vec2 silkFrame(vec2 q) { float ca = cos(uSilkA), sa = sin(uSilkA); return vec2(ca * q.x + sa * q.y, -sa * q.x + ca * q.y); }
 float silkReveal(vec2 q) { return 1.0 - smoothstep(uSilk.y - 10.0, uSilk.y, abs(q.x)); }
 vec3 silkIn(vec3 col, vec2 q, float inside, float tone) {
   Silk s = silkField(q, 2.1);
@@ -348,7 +357,7 @@ void main() {
   vec2 p = layoutPx(gl_FragCoord.xy);
   vec3 bg = sceneAt(p, 0.0);
   float tone = uTone;
-  vec2 q = p - uC;
+  vec2 q = silkFrame(p - uC);
   // Нить, прочерченная ещё до стекла («Шов»), лежит прямо на фоне.
   if (uSilk.z > 0.001) {
     Silk s = silkField(q, 2.1);
@@ -382,7 +391,7 @@ void main() {
     col = sceneBlur(src, frost);
   }
   col = clamp(col * mix(1.0, 0.914, m) + 0.086 * m, 0.0, 1.0);
-  if (uSilk.x > 0.001) col = silkIn(col, mix(p, src, 0.3) - uC, inside, tone);
+  if (uSilk.x > 0.001) col = silkIn(col, silkFrame(mix(p, src, 0.3) - uC), inside, tone);
   col = rim(col, p, n, inside, m);
   outColor = vec4(mix(under, col, cover), 1.0);
 }
@@ -426,18 +435,114 @@ void main() {
     return { hw, hh, k: clamp01(hh / (CH / 2)) };
   }
 
-  // Капли «Слияния»: x и y от центра пилюли и радиус, px макета.
-  const MERGE = [[-92, 8, 8], [-44, -16, 11], [6, 14, 13], [50, -12, 10], [94, 6, 8]];
-  // «Конденсат»: мелкие капли в случайных местах, но всегда в одних и тех же — сид
-  // постоянный, иначе раскадровку не сравнить с показом живьём.
-  const DEW = (() => {
-    let seed = 20261009;
-    const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
-    return Array.from({ length: 11 }, () => [mix(-125, 125, rand()), mix(-30, 30, rand()), mix(3, 7.5, rand()), 0.12 * rand()]);
+  // Слияние, третий заход (отзыв 9.10): площадь капель с самого начала равна
+  // площади пилюли — масса не берётся из ниоткуда, — и капли не летят друг в
+  // друга: сливаются по ходу общего движения — вихря, стекания или роста.
+  const AREA = CW * CH - (4 - Math.PI) * (CH / 2) ** 2;  // площадь «Слушаю», px²
+
+  /** Капля площадью area: круг, пока помещается в высоту пилюли, дальше —
+   *  капсула той же высоты. Площадь пилюли целиком — ровно пилюля «Слушаю». */
+  function blob(cx, cy, area, angle = 0) {
+    const h = Math.min(CH / 2, Math.sqrt(Math.max(area, 0) / Math.PI));
+    const l = h > 0 ? Math.max(0, (area - Math.PI * h * h) / (4 * h)) : 0;
+    return [cx, cy, l + h, h, angle];
+  }
+
+  const sdBoxJS = (x, y, bx, by, r) => {
+    const qx = Math.abs(x) - bx + r, qy = Math.abs(y) - by + r;
+    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+  };
+  /** Сколько капли радиуса r уже влилось в тело: 0 — только коснулась, 1 — целиком
+   *  внутри. Что зашло в тело, то тело и забрало: иначе на перекрытии терялась
+   *  площадь — во втором заходе до четверти пилюли. */
+  // Капля влита целиком, когда её центр ушёл внутрь на (SOAK − 1)·r: при 2 —
+  // на весь радиус, и остаток капли ещё торчал в теле — площадь проседала на 9%.
+  const SOAK = 1.4;
+  function soaked(x, y, r, body) {
+    let dx = x - body[0], dy = y - body[1];
+    const a = body[4] || 0;
+    if (a) { const ca = Math.cos(a), sa = Math.sin(a); [dx, dy] = [ca * dx + sa * dy, -sa * dx + ca * dy]; }
+    return clamp01((r - sdBoxJS(dx, dy, body[2], body[3], Math.min(body[2], body[3]))) / (SOAK * r));
+  }
+
+  // «Вихрь»: пять капель кружат вокруг зародыша и по спирали уходят в него;
+  // радиус орбиты, начальный угол и когда капля целиком влилась, с.
+  const VORTEX = [96, 104, 112, 100, 108].map((r0, i) => [r0, 0.4 + (i * 2 * Math.PI) / 5, 0.42 + 0.07 * i]);
+  const VORTEX_SEED = 0.25;   // доля площади у зародыша, остальное поровну у пяти капель
+
+  // «Стекание»: доля площади, x от центра пилюли, высота над ней, когда сорвалась.
+  // Центр масс капель — ровно над центром пилюли, иначе лужица в конце съезжала бы.
+  const RAIN = (() => {
+    const f = [0.2, 0.14, 0.18, 0.16, 0.12, 0.2];
+    const x = [-70, -38, -6, 28, 52, 74];
+    const shift = f.reduce((s, fi, i) => s + fi * x[i], 0);
+    const D = [104, 70, 110, 88, 60, 96];
+    const t0 = [0.02, 0, 0.1, 0.05, 0.12, 0.07];
+    // Время падения — как у свободного падения: растёт как корень из высоты.
+    return f.map((fi, i) => ({ f: fi, x: x[i] - shift, D: D[i], t0: t0[i], T: 0.035 * Math.sqrt(D[i]) }));
   })();
-  // «Цепочка»: капли по оси пилюли; к концу крайние подтягиваются внутрь (×0.8),
-  // чтобы круги радиусом 28 не вылезли за концы капсулы.
-  const CHAIN = [-90, -60, -30, 0, 30, 60, 90];
+
+  // «Роса»: зародыши парами, симметричными относительно центра пилюли, — общий
+  // центр масс всегда в её центре, и последняя капля встаёт ровно на место.
+  const DEW_GROW = 0.5;   // за сколько конденсируется каждая капля, с
+  const DEW_SNAP = 0.07;  // за сколько две коснувшиеся капли становятся одной
+  const DEW_SEEDS = (() => {
+    const half = [[-84, -11], [-84, 11], [-54, -11], [-54, 11], [-24, -11], [-24, 11]];
+    const jit = [[3, 2], [-2, -1], [4, -2], [-3, 1], [1, 0], [-4, 2]];
+    const t0 = [0.03, 0.0, 0.06, 0.02, 0.09, 0.05];
+    const w = [0.9, 1.1, 1.0, 0.95, 1.05, 1.0];
+    const seeds = half.map(([x, y], i) => ({ x: x + jit[i][0], y: y + jit[i][1], t0: t0[i], w: w[i] }));
+    const all = seeds.concat(seeds.map((s) => ({ ...s, x: -s.x, y: -s.y })));
+    const total = all.reduce((s, d) => s + d.w, 0);
+    return all.map((d) => ({ ...d, m: (d.w / total) * AREA }));
+  })();
+
+  const dewMass = (set, u) => set.reduce((s, i) => s + DEW_SEEDS[i].m * smooth(DEW_SEEDS[i].t0, DEW_SEEDS[i].t0 + DEW_GROW, u), 0);
+  function dewCenter(set, u) {
+    let sx = 0, sy = 0, sm = 0;
+    for (const i of set) {
+      const d = DEW_SEEDS[i];
+      const m = d.m * Math.max(1e-3, smooth(d.t0, d.t0 + DEW_GROW, u));
+      sx += m * d.x; sy += m * d.y; sm += m;
+    }
+    return [C[0] + sx / sm, C[1] + sy / sm];
+  }
+  // Касание двух горизонтальных капсул: расстояние между их осями минус высоты.
+  function dewTouch(a, b) {
+    const dx = Math.max(0, Math.abs(a[0] - b[0]) - (a[2] - a[3]) - (b[2] - b[3]));
+    return Math.hypot(dx, a[1] - b[1]) - a[3] - b[3] < 0.5;
+  }
+  const dewShape = (set, u) => blob(...dewCenter(set, u), dewMass(set, u));
+
+  // Слияния считаются один раз: роса детерминирована, и раскадровка и показ
+  // живьём берут готовую летопись капель, а не гоняют расчёт с нуля на кадр.
+  const DEW_LOG = (() => {
+    const log = DEW_SEEDS.map((_, i) => ({ set: [i], born: -1, died: Infinity, parents: null }));
+    const alive = () => log.filter((d) => d.died === Infinity);
+    const end = Math.max(...DEW_SEEDS.map((d) => d.t0)) + DEW_GROW;
+    const join = (a, b, u) => {
+      a.died = b.died = u;
+      log.push({ set: a.set.concat(b.set), born: u, died: Infinity, parents: [a, b] });
+    };
+    for (let u = 0; u <= end + 0.05; u += 1 / 480) {
+      for (let again = true; again;) {
+        again = false;
+        const now = alive();
+        outer: for (let i = 0; i < now.length; i++) {
+          for (let j = i + 1; j < now.length; j++) {
+            if (dewTouch(dewShape(now[i].set, u), dewShape(now[j].set, u))) {
+              join(now[i], now[j], u);
+              again = true;
+              break outer;
+            }
+          }
+        }
+      }
+      // К концу конденсации всё обязано стать одной пилюлей.
+      if (u >= end) while (alive().length > 1) join(alive()[0], alive()[1], u);
+    }
+    return log;
+  })();
 
   const VARIANTS = [
     {
@@ -500,88 +605,100 @@ void main() {
       },
     },
     {
-      id: 'merge', name: 'Слияние',
-      line: 'Как в первом круге: пять капель проступают вокруг места пилюли, сбегаются и сливаются в капсулу.',
+      id: 'vortex', name: 'Вихрь',
+      line: 'Пять капель кружат вокруг зародыша и по спирали вливаются в него сбоку, по ходу вращения. Растущая капля вытягивается и, замедляясь, ложится пилюлей.',
+      crop: [110, C[1] - 84, 300, TILE_H - (C[1] - 84)],
       at(t) {
-        const conv = spring(t, 0, 1, 0.55, 0.85, 0.12);
-        const prims = MERGE.map(([x, y, r], i) => {
-          const s = clamp01(spring(t, 0, 1, 0.3, 0.7, 0.03 * i));
-          const rr = Math.min(26, r * s * mix(1, 2, conv));
-          return [C[0] + mix(x, x * 0.45, conv), C[1] + mix(y, 0, conv), rr, rr];
+        const part = (1 - VORTEX_SEED) / VORTEX.length;
+        const rs = Math.sqrt((part * AREA) / Math.PI);
+        const phi = spring(t, -1.6 * Math.PI, 0, 0.9, 1.0);
+        const sats = VORTEX.map(([r0, th0, end]) => {
+          const tau = clamp01(t / end);
+          const R = r0 * (1 - tau * tau);
+          // Ближе к центру — быстрее: как фигуристка, прижавшая руки.
+          const th = th0 + 3.2 * t + 2.0 * (1 - R / r0);
+          return [C[0] + R * Math.cos(th) * 1.15, C[1] + R * Math.sin(th) * 0.5];
         });
-        const grow = clamp01(spring(t, 0, 1, 0.5, 0.8, 0.32));
-        if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
+        // Тело растёт от того, что впитало, и впитывает больше, чем выросло, —
+        // несколько проходов сводят это к согласию.
+        let soak = sats.map(() => 0);
+        let body = 0;
+        for (let k = 0; k < 5; k++) {
+          body = VORTEX_SEED + part * soak.reduce((sum, a) => sum + a, 0);
+          const shape = blob(C[0], C[1], body * AREA, phi);
+          soak = sats.map(([x, y], i) => Math.max(soak[i], soaked(x, y, rs, shape)));
+        }
+        const prims = [];
+        sats.forEach(([x, y], i) => { if (soak[i] < 0.999) prims.push(blob(x, y, part * (1 - soak[i]) * AREA)); });
+        prims.unshift(blob(C[0], C[1], body * AREA, phi));
         return rest({
-          prims, k: mix(3.5, 0.01, smooth(0.75, 1.1, t)),
-          glass: [smooth(0, 0.05, t), mix(16, 41, conv), mix(4.5, 13, conv), 2.4],
-          silk: [smooth(0.45, 0.8, t), 1e4, 0],
+          prims, k: 3,
+          glass: [smooth(0, 0.06, t), 41, 11, 2.4],
+          silk: [smooth(0.6, 0.95, body), 1e4, 0], silkA: phi,
         });
       },
     },
     {
-      id: 'dew', name: 'Конденсат',
-      line: 'Одиннадцать мелких капель выпадают на экран, как роса на холодном стекле; ближние к центру сливаются первыми, дальние подтягиваются следом.',
+      id: 'rain', name: 'Стекание',
+      line: 'Шесть капель — вместе ровно столько стекла, сколько в пилюле, — срываются и стекают вниз, как дождь по окну, и собираются лужицей на месте пилюли.',
+      crop: [150, C[1] - 136, 220, TILE_H - (C[1] - 136)],
       at(t) {
-        const prims = DEW.map(([x, y, r, delay]) => {
-          const s = clamp01(spring(t, 0, 1, 0.22, 0.8, delay));
-          const near = Math.hypot(x / 125, y / 30) / Math.SQRT2;  // 0 — в центре, ~1 — с краю
-          const conv = spring(t, 0, 1, 0.5, 0.85, 0.14 + 0.16 * near);
-          const rr = Math.min(24, r * s * mix(1, 3.2, clamp01(conv)));
-          return [C[0] + mix(x, x * 0.4, conv), C[1] + mix(y, 0, conv), rr, rr];
+        const drops = RAIN.map((d, i) => {
+          const tau = clamp01((t - d.t0) / d.T);
+          return {
+            d, tau, r: Math.sqrt((d.f * AREA) / Math.PI),
+            x: d.x + 3 * Math.sin(tau * Math.PI * 1.5 + i) * tau,
+            y: C[1] - d.D * (1 - tau * tau),
+          };
         });
-        const grow = clamp01(spring(t, 0, 1, 0.5, 0.8, 0.36));
-        if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
-        const conv0 = clamp01(spring(t, 0, 1, 0.5, 0.85, 0.14));
+        // Капля отдаёт лужице ту часть, что ушла ниже её поверхности; лужица
+        // от этого выше и забирает больше — несколько проходов до согласия.
+        let soak = drops.map(() => 0);
+        let pool = 0, sx = 0;
+        for (let k = 0; k < 5; k++) {
+          pool = drops.reduce((sum, q, i) => sum + q.d.f * soak[i], 0);
+          const top = C[1] - Math.min(CH / 2, Math.sqrt((pool * AREA) / Math.PI));
+          soak = drops.map((q, i) => Math.max(soak[i], clamp01((q.y + q.r - top) / (SOAK * q.r))));
+        }
+        pool = drops.reduce((sum, q, i) => sum + q.d.f * soak[i], 0);
+        sx = drops.reduce((sum, q, i) => sum + q.d.f * soak[i] * q.x, 0);
+        const prims = [];
+        drops.forEach((q, i) => {
+          if (soak[i] > 0.999) return;
+          const r = q.r * Math.sqrt(1 - soak[i]);
+          // На скорости капля вытягивается вдоль пути при той же площади.
+          const e = 0.18 * q.tau * (1 - soak[i]);
+          prims.push([C[0] + q.x, q.y, r / Math.sqrt(1 + e), r * Math.sqrt(1 + e)]);
+        });
+        if (pool > 0.001) prims.unshift(blob(C[0] + sx / pool, C[1], pool * AREA));
         return rest({
-          prims, k: mix(2.5, 0.01, smooth(0.8, 1.15, t)),
-          glass: [smooth(0, 0.05, t), mix(10, 41, conv0), mix(2.5, 13, conv0), 2.4],
-          silk: [smooth(0.5, 0.85, t), 1e4, 0],
+          prims, k: 3,
+          glass: [smooth(0, 0.06, t), 41, 11, 2.4],
+          silk: [smooth(0.45, 0.9, pool), 1e4, 0],
         });
       },
     },
     {
-      id: 'chain', name: 'Цепочка',
-      line: 'Семь капель в ряд по оси пилюли набухают и сливаются от середины к краям, как застёжка; нить шёлка тянется по слитой части.',
+      id: 'dew', name: 'Роса',
+      line: 'Никто никуда не летит: капли конденсируются на месте пилюли, растут, и коснувшиеся сливаются в одну — как роса на холодном стекле.',
       at(t) {
-        const prims = CHAIN.map((x, i) => {
-          const order = Math.abs(i - 3);                          // 0 — середина
-          const s = clamp01(spring(t, 0, 1, 0.24, 0.75, 0.025 * order));
-          const r0 = 9 - order;                                   // 9, 8, 7, 6 px
-          const swell = clamp01(spring(t, 0, 1, 0.34, 0.7, 0.1 + 0.075 * order));
-          const r = r0 * s + (CH / 2 - r0) * swell;
-          return [C[0] + mix(x, x * 0.8, swell), C[1] + (order % 2 ? 2 : -1.5) * (1 - swell), r, r];
-        });
-        // Между кругами по краям остаются выемки — их заливает сама капсула.
-        const grow = smooth(0.42, 0.68, t);
-        if (grow > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * grow, (CH / 2) * grow));
-        const mid = clamp01(spring(t, 0, 1, 0.34, 0.7, 0.1));
+        const prims = [];
+        let biggest = 0;
+        for (const d of DEW_LOG) {
+          if (d.born > t || d.died <= t) continue;
+          const snap = d.born < 0 ? 1 : smooth(d.born, d.born + DEW_SNAP, t);
+          const [cx, cy] = dewCenter(d.set, t);
+          const mass = dewMass(d.set, t);
+          biggest = Math.max(biggest, mass);
+          prims.push(blob(cx, cy, mass * snap));
+          // Пока две капли становятся одной, они ещё видны и отдают ей площадь.
+          if (snap < 1) for (const p of d.parents) prims.push(blob(...dewCenter(p.set, t), dewMass(p.set, t) * (1 - snap)));
+        }
+        const h = Math.min(CH / 2, Math.sqrt(biggest / Math.PI));
         return rest({
-          prims, k: mix(4, 0.01, smooth(0.75, 1.1, t)),
-          glass: [smooth(0, 0.05, t), mix(14, 41, mid), mix(4, 13, mid), 2.4],
-          silk: [smooth(0.1, 0.3, t), 6 + 86 * clamp01(spring(t, 0, 1, 0.42, 0.9, 0.12)), 0],
-        });
-      },
-    },
-    {
-      id: 'halves', name: 'Две половины',
-      line: 'Две капли рождаются на концах будущей пилюли и стекаются навстречу; встретившись, качнутся одной волной.',
-      at(t) {
-        const meet = 0.3;
-        // Волна после встречи — продолжение того же движения, а не новое.
-        const wob = t > meet ? 0.07 * Math.exp(-(t - meet) / 0.16) * Math.sin((2 * Math.PI * (t - meet)) / 0.2) : 0;
-        const hh = Math.max(0, spring(t, 0, CH / 2, 0.3, 0.55)) * (1 + wob);
-        const d = spring(t, 78, CW / 4, 0.42, 0.8, 0.1);         // центр половины: 78 → 50
-        const hw = Math.max(hh, spring(t, 0, CW / 4, 0.42, 0.8, 0.1));
-        const prims = [pill(C[0] - d, C[1], hw, hh), pill(C[0] + d, C[1], hw, hh)];
-        // Половины сходятся скруглёнными концами, и посередине осталась бы
-        // перетяжка: её заливает капсула, которая растёт из места встречи.
-        const join = smooth(0.22, 0.42, t);
-        if (join > 0.02) prims.push(pill(C[0], C[1], (CW / 2) * join, hh * join));
-        const k = clamp01(hh / (CH / 2));
-        return rest({
-          prims, k: mix(5, 0.01, smooth(0.6, 0.9, t)),
-          glass: [smooth(0, 0.05, t), 41 * Math.pow(k, 1.5), bevelFor(hh), 2.4],
-          silk: [smooth(0.3, 0.55, t), 1e4, 0],
+          prims, k: 2.5,
+          glass: [1, 41 * Math.pow(h / (CH / 2), 1.5), bevelFor(h), 2.4],
+          silk: [smooth(0.5, 0.9, biggest / AREA), 1e4, 0],
         });
       },
     },
@@ -593,7 +710,7 @@ void main() {
     const st = v.at(HOLD);
     const m = clamp01(spring(t, 1, 0, 0.32, 1.0, HOLD));
     const s = 0.96 + 0.04 * m;
-    st.prims = st.prims.map(([x, y, w, h]) => [x, y, w * s, h * s]);
+    st.prims = st.prims.map(([x, y, w, h, a]) => [x, y, w * s, h * s, a || 0]);
     st.glass = [st.glass[0] * m, st.glass[1] * m, st.glass[2], st.glass[3]];
     st.silk = [st.silk[0] * smooth(0.3, 1, m), st.silk[1], st.silk[2]];
     if (m < 0.003) st.prims = [];
@@ -640,7 +757,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
       const info = gl.getActiveUniform(prog, i);
       u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(prog, info.name);
     }
-    return { gl, canvas, prog, u, textures: {}, prim: new Float32Array(48) };
+    return { gl, canvas, prog, u, textures: {}, prim: new Float32Array(64), primA: new Float32Array(16) };
   }
 
   // Фон — сцена в рабочей области и панель задач под ней; рисуется один раз на
@@ -712,9 +829,11 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     set1('uPx', px);
     set2('uTile', TILE_W, TILE_H);
     r.prim.fill(0);
-    st.prims.slice(0, 12).forEach((pr, i) => r.prim.set(pr, i * 4));
+    r.primA.fill(0);
+    st.prims.slice(0, 16).forEach((pr, i) => { r.prim.set(pr.slice(0, 4), i * 4); r.primA[i] = pr[4] || 0; });
     if (u.uPrim) gl.uniform4fv(u.uPrim, r.prim);
-    if (u.uPrimN) gl.uniform1i(u.uPrimN, Math.min(12, st.prims.length));
+    if (u.uPrimA) gl.uniform1fv(u.uPrimA, r.primA);
+    if (u.uPrimN) gl.uniform1i(u.uPrimN, Math.min(16, st.prims.length));
     set1('uK', st.k);
     set1('uClipY', st.clipY);
     set4('uGlass', st.glass);
@@ -723,6 +842,7 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     set4('uSilk', st.silk);
     set2('uC', C[0], C[1]);
     set2('uCap', CW, CH);
+    set1('uSilkA', st.silkA || 0);
     set1('uTone', bg.tone);
     set1('uPhrase', 0);
     set1('uFlow', 0);
@@ -787,11 +907,12 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
       try {
         for (const f of item.frames) {
           const px = render(film, state.scene, state.zoom, item.v.at(f.t));
-          const [x, y, w, h] = CROP.map((k) => Math.round(k * px));
+          const crop = item.v.crop || CROP;
+          const [x, y, w, h] = crop.map((k) => Math.round(k * px));
           f.canvas.width = w;
           f.canvas.height = h;
-          f.canvas.style.width = CROP[2] * state.zoom + 'px';
-          f.canvas.style.height = CROP[3] * state.zoom + 'px';
+          f.canvas.style.width = crop[2] * state.zoom + 'px';
+          f.canvas.style.height = crop[3] * state.zoom + 'px';
           f.canvas.getContext('2d').drawImage(film.canvas, x, y, w, h, 0, 0, w, h);
         }
       } catch (err) {
@@ -872,7 +993,35 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
     }
     return result;
   }
-  window.BirthSketches = { bench };
+  const sminJS = (a, b, k) => {
+    k = Math.max(k, 1e-4) * (16 / 3);
+    const h = Math.max(k - Math.abs(a - b), 0) / k;
+    return Math.min(a, b) - h * h * h * (4 - h) * k / 16;
+  };
+  /** Площадь формы варианта в моменты times, в долях площади пилюли «Слушаю» —
+   *  та же форма, что в шейдере, по пикселям рабочей области. */
+  function areas(id, times = [0.05, 0.12, 0.2, 0.3, 0.45, 0.6, 1.0]) {
+    const v = VARIANTS.find((x) => x.id === id);
+    return times.map((t) => {
+      const st = v.at(t);
+      let n = 0;
+      for (let y = 0.5; y < Math.min(EDGE, st.clipY); y += 1) {
+        for (let x = 0.5; x < TILE_W; x += 1) {
+          let d = 1e5;
+          st.prims.slice(0, 16).forEach((c, i) => {
+            let dx = x - c[0], dy = y - c[1];
+            const a = c[4] || 0;
+            if (a) { const ca = Math.cos(a), sa = Math.sin(a); [dx, dy] = [ca * dx + sa * dy, -sa * dx + ca * dy]; }
+            const di = sdBoxJS(dx, dy, c[2], c[3], Math.min(c[2], c[3]));
+            d = i === 0 ? di : sminJS(d, di, st.k);
+          });
+          if (d < 0) n++;
+        }
+      }
+      return [t, +(n / AREA).toFixed(3)];
+    });
+  }
+  window.BirthSketches = { bench, areas };
 
   syncButtons();
   // Шрифты Segoe на фонах: ждём их, иначе первый кадр уйдёт с запасным шрифтом.
