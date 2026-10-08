@@ -227,6 +227,12 @@ class CloudClient:
         return self._active.whisper_model
 
     @property
+    def sends_prompt(self) -> bool:
+        """Уходит ли подсказка Whisper: сервер, однажды её отбивший, больше её
+        не получает, и распознавание идёт молча без неё."""
+        return self._active.sends_prompt
+
+    @property
     def on_reserve(self) -> bool:
         """Работает не тот сервер, который человек считает основным."""
         return bool(self._servers) and self._active is not self._servers[0]
