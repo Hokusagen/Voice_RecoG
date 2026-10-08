@@ -124,6 +124,7 @@ class Tray(QSystemTrayIcon):
     history_picked = Signal(str)
     config_requested = Signal()
     journal_requested = Signal()
+    restart_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, cfg, hotkeys_cfg, llm_cfg) -> None:
@@ -221,6 +222,10 @@ class Tray(QSystemTrayIcon):
         menu.addAction(open_journal)
 
         menu.addSeparator()
+        restart_action = QAction("Перезапустить", menu)
+        restart_action.triggered.connect(self.restart_requested)
+        menu.addAction(restart_action)
+
         quit_action = QAction("Выход", menu)
         quit_action.triggered.connect(self.quit_requested)
         menu.addAction(quit_action)

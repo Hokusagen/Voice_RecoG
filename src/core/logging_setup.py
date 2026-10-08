@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -22,6 +23,10 @@ CRASH_PATH = app_data_dir() / "crash.log"
 #: Лог перезаписывается, если разросся: это дневник последнего запуска, а не архив.
 _MAX_BYTES = 512 * 1024
 
+#: Писать в файл, даже если вывод куда-то подключён: так запускает перезапуск
+#: из трея, у которого вывод уходит в никуда.
+FORCE_ENV = "VOICETYPER_LOG_TO_FILE"
+
 
 def _stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -34,7 +39,7 @@ def redirect_output() -> Path | None:
     одна сборка, запуски из исходников не оставляли в логе ни строки — даже
     отказы облака. Запущенное из терминала по-прежнему пишет в терминал.
     """
-    if not (getattr(sys, "frozen", False) or sys.stdout is None):
+    if not (getattr(sys, "frozen", False) or sys.stdout is None or os.environ.get(FORCE_ENV)):
         return None
     try:
         if LOG_PATH.exists() and LOG_PATH.stat().st_size > _MAX_BYTES:

@@ -64,6 +64,9 @@ class Controller(QObject):
             asker=self.asker,
         )
 
+        self.restarting = False
+        """Выход ради перезапуска: новый экземпляр поднимет main после цикла событий."""
+
         self._action: str | None = None
         self._paused = False
         self._ready = False
@@ -128,6 +131,7 @@ class Controller(QObject):
         self.tray.history_picked.connect(self._on_history_pick)
         self.tray.config_requested.connect(self._on_open_config)
         self.tray.journal_requested.connect(self._on_open_journal)
+        self.tray.restart_requested.connect(self.restart)
         self.tray.quit_requested.connect(self.shutdown)
 
     # ---------- запуск и остановка ----------
@@ -155,6 +159,13 @@ class Controller(QObject):
         self.tray.hide()
         self.pipeline.shutdown()
         QApplication.quit()
+
+    def restart(self) -> None:
+        # Сам перезапуск — в main: новый экземпляр можно поднимать только после
+        # того, как этот снял хук клавиатуры и отпустил замок единственного
+        # экземпляра, иначе он решит, что VoiceTyper уже запущен, и выйдет.
+        self.restarting = True
+        self.shutdown()
 
     # ---------- горячие клавиши ----------
 

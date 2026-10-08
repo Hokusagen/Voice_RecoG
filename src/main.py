@@ -68,6 +68,59 @@ def _lock_file_taken() -> bool:
     return False
 
 
+def _release_instance() -> None:
+    """Отпускает замок единственного экземпляра, не дожидаясь выхода процесса."""
+    global _mutex_handle
+    if _mutex_handle is None:
+        return
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle(_mutex_handle)
+    else:
+        _mutex_handle.close()
+    _mutex_handle = None
+
+
+def _relaunch() -> None:
+    """Поднимает новый экземпляр той же командой, что запустила этот.
+
+    Из исходников это значит свежий код: перезапуск заменяет «Выход» и
+    повторный клик по ярлыку после каждого коммита.
+    """
+    import os
+    import subprocess
+
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, *sys.argv[1:]]
+    else:
+        launcher = Path(sys.executable)
+        if sys.platform == "win32" and launcher.with_name("pythonw.exe").exists():
+            # Консоли у нового экземпляра не будет, а python.exe без неё
+            # открывал бы окно каждой консольной утилите, которую зовёт.
+            # Ярлык и автозапуск и так идут через pythonw.
+            launcher = launcher.with_name("pythonw.exe")
+        command = [str(launcher), *sys.argv]
+
+    options: dict = {}
+    if sys.platform == "win32":
+        options["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
+    # Вывод у нового экземпляра никуда не подключён, поэтому лог в файл ему
+    # нужно включить явно — иначе после перезапуска из терминала он молчал бы.
+    env = dict(os.environ, **{logging_setup.FORCE_ENV: "1"})
+    _release_instance()
+    subprocess.Popen(
+        command, cwd=os.getcwd(), env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        **options,
+    )
+    print(f"[main] перезапуск: {' '.join(command)}")
+
+
 def main() -> int:
     if _already_running():
         print("VoiceTyper уже запущен.")
@@ -94,7 +147,10 @@ def main() -> int:
 
     controller = Controller(cfg)
     controller.start()
-    return app.exec()
+    code = app.exec()
+    if controller.restarting:
+        _relaunch()
+    return code
 
 
 if __name__ == "__main__":
