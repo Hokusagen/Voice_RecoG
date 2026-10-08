@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from config import AskConfig, app_data_dir
+from core import formulas
 from core.audio import to_wav
 from core.journal import new_id
 
@@ -145,7 +146,8 @@ class Asker:
         if not self.cfg.context_hint or not conversation.turns:
             return ""
         last = conversation.turns[-1]
-        text = _MARKUP.sub("", f"{last.question} {last.answer}")
+        # Формулы — плоским текстом: «\frac{1}{1+e^{-x}}» Whisper ничего не подскажет.
+        text = _MARKUP.sub("", f"{last.question} {formulas.to_plain(last.answer)}")
         text = " ".join(text.split())
         if len(text) <= _HINT_CHARS:
             return text

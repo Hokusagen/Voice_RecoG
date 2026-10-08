@@ -29,6 +29,7 @@ Windows пропускает к окнам под ним, так что пуст
 from __future__ import annotations
 
 import sys
+import unicodedata
 from dataclasses import dataclass, field, replace
 from urllib.parse import urlparse
 
@@ -61,6 +62,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import UIConfig
+from core import formulas
 from core.ask import clean_answer
 from ui import theme
 from ui.motion import Spring
@@ -427,8 +429,10 @@ class AnswerCard(QWidget):
         if not self._turns:
             return ""
         doc = QTextDocument()
-        doc.setMarkdown(clean_answer(self._turns[-1].answer))
-        return doc.toPlainText().strip()
+        text, found = formulas.split(clean_answer(self._turns[-1].answer))
+        doc.setMarkdown(text)
+        # Формулы — плоским текстом: сырой LaTeX в чате или письме не читается.
+        return formulas.unmark(doc.toPlainText(), found).strip()
 
     def _on_insert(self) -> None:
         self.insert_requested.emit(self._plain())
@@ -521,7 +525,7 @@ class AnswerCard(QWidget):
             else:
                 cursor.setBlockFormat(_block("spacer"))
             if turn.answer:
-                cursor.insertFragment(self._fragment(turn.answer))
+                cursor.insertFragment(self._fragment(turn.answer, partial=index == self._pending))
             footer = self._footer(turn)
             if footer:
                 cursor.insertBlock(_block("footer", bottom=gap), self._small())
@@ -547,17 +551,19 @@ class AnswerCard(QWidget):
             self._hold_pin()
         self._retarget()
 
-    def _fragment(self, markdown: str) -> QTextDocumentFragment:
+    def _fragment(self, markdown: str, partial: bool = False) -> QTextDocumentFragment:
         """Ответ, разобранный из Markdown, — кусок для вставки в ленту.
 
         Вставленный кусок сливает свой первый абзац с тем, куда его вставили,
         и абзац теряет вид: заголовок становится текстом, первая строка кода —
         строкой без подложки. Поэтому в начало куска кладётся пустой абзац —
-        сливается он, с распоркой нулевой высоты.
+        сливается он, с распоркой нулевой высоты. partial — ответ ещё идёт.
         """
         piece = QTextDocument()
         piece.setDefaultFont(self._text.document().defaultFont())
-        piece.setMarkdown(clean_answer(markdown))
+        text, found = formulas.split(clean_answer(markdown), partial)
+        piece.setMarkdown(text)
+        _typeset(piece, found)
         QTextCursor(piece).insertBlock()
         return QTextDocumentFragment(piece)
 
@@ -811,6 +817,51 @@ def _css(color: QColor) -> str:
 def _domain(url: str) -> str:
     host = urlparse(url).netloc
     return host[4:] if host.startswith("www.") else host or url
+
+
+#: Склейка без ширины: между двумя знаками формулы строка не переносится.
+#: Неразрывный пробел держит только пробелы, а после «/» Qt переносит всё
+#: равно: «σ(x) = 1/» на одной строке, «(1 + e⁻ˣ)» на другой.
+WORD_JOINER = "⁠"
+
+
+def _typeset(doc: QTextDocument, found: list[formulas.Formula]) -> None:
+    """Формулы на места меток: курсив, индексы и ни одного переноса внутри.
+
+    Вид берётся у текста вокруг метки — формула в жирном пункте списка
+    останется жирной. Шире карточки формула всё же перенесётся: в поле ответа
+    перенос «по словам, а если некуда — где угодно».
+    """
+    for index, formula in enumerate(found):
+        cursor = doc.find(formulas.mark(index))
+        if cursor.isNull():
+            continue
+        base = cursor.charFormat()
+        cursor.removeSelectedText()
+        for number, run in enumerate(formulas.runs(formula.latex)):
+            fmt = QTextCharFormat(base)
+            fmt.setFontItalic(run.italic)
+            if run.bold:
+                fmt.setFontWeight(700)
+            if run.script:
+                fmt.setVerticalAlignment(
+                    QTextCharFormat.AlignSuperScript if run.script > 0 else QTextCharFormat.AlignSubScript
+                )
+            cursor.insertText(_glued(run.text, first=number == 0), fmt)
+        if formula.display:
+            block = cursor.blockFormat()
+            block.setAlignment(Qt.AlignHCenter)
+            cursor.setBlockFormat(block)
+
+
+def _glued(text: str, first: bool) -> str:
+    """Текст с WORD_JOINER между знаками; перед диакритикой — нет: ŷ рассыпался бы."""
+    pieces = [] if first else [WORD_JOINER]
+    for index, char in enumerate(text):
+        if index and not unicodedata.combining(char):
+            pieces.append(WORD_JOINER)
+        pieces.append(char)
+    return "".join(pieces)
 
 
 def _shape(doc: QTextDocument, code_bg: QColor, link: QColor, gap: int) -> None:
