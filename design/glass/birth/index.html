@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Появление пилюли</title>
+<style>
+  :root {
+    --bg: #0d0e11;
+    --panel: #15171b;
+    --line: #23262c;
+    --text: #e9eaee;
+    --muted: #8d919b;
+    --accent: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; padding: 24px 22px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px 32px; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: 0.1px; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+  .seg { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+  .seg > span { font-size: 12.5px; }
+  .seg .opts { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .seg button {
+    all: unset; cursor: pointer; padding: 5px 12px; border-radius: 999px; color: var(--muted); font-size: 13px;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: #2b2f37; color: var(--accent); }
+  /* Класс задаёт inline-flex и перебивает атрибут hidden — возвращаем ему силу. */
+  .seg[hidden] { display: none; }
+  .row { padding: 16px 0 18px; border-top: 1px solid var(--line); }
+  .meta { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .meta .num { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .meta h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .meta p { margin: 0; color: var(--muted); font-size: 13px; }
+  .frames { display: flex; flex-wrap: wrap; gap: 6px; }
+  .frame { display: flex; flex-direction: column; gap: 4px; }
+  .frame span { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .frame canvas, .live canvas { display: block; border-radius: 8px; background: #000; }
+  .live { display: none; }
+  body.is-live .live { display: block; }
+  body.is-live .frames { display: none; }
+  .error { color: #ff8a80; white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Появление пилюли</h1>
+    <p>«Слушаю» снизу по центру, на 96 px над панелью задач. Одно движение в каждом; уход у всех — как сейчас.</p>
+  </div>
+  <div class="controls">
+    <div class="seg" data-key="mode"><span>Показ</span><div class="opts">
+      <button data-value="film">Раскадровка</button><button data-value="live">Живьём</button>
+    </div></div>
+    <div class="seg" data-key="speed"><span>Скорость</span><div class="opts">
+      <button data-value="1">Как есть</button><button data-value="0.25">×¼</button>
+    </div></div>
+    <div class="seg" data-key="scene"><span>Фон</span><div class="opts">
+      <button data-value="doc">Документ</button><button data-value="code">Редактор</button><button data-value="photo">Обои</button>
+    </div></div>
+    <div class="seg" data-key="zoom"><span>Размер</span><div class="opts">
+      <button data-value="1">Как на экране</button><button data-value="2">×2</button>
+    </div></div>
+  </div>
+</header>
+<main id="rows"></main>
+<script src="birth.js"></script>
+</body>
+</html>
