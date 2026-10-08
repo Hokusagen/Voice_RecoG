@@ -413,8 +413,9 @@ class Pipeline(QObject):
         print(f"[ask] вопрос {record.turn} в разговоре {record.conversation}: «{question}»")
         record.app = active_app()
 
-        self._emit(Stage.POLISHING, "Думаю", self._asker.cfg.model)
-        self.asking.emit(conversation.id, record.turn, question, self._asker.cfg.web_search)
+        searching = self._asker.wants_search(question)
+        self._emit(Stage.POLISHING, "Ищу" if searching else "Думаю", self._asker.cfg.model)
+        self.asking.emit(conversation.id, record.turn, question, searching)
         asked = time.monotonic()
         try:
             answer = self._asker.ask(question, conversation, self.answer_delta.emit, on_search=self.searching.emit)

@@ -192,7 +192,7 @@ def ask_patiently(asker: Asker, question: str, conversation) -> dict:
     """
     for attempt in range(5):
         try:
-            answer = asker.ask(question, conversation)
+            answer = asker.ask(question, conversation, search=False)
         except AskFailed as exc:
             message = str(exc)
             if "квота" in message:

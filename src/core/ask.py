@@ -76,6 +76,24 @@ QUERY_PROMPT = (
 )
 
 
+#: Человек сам просит искать: «найди в интернете», «посмотри в сети»,
+#: «погугли», «поищи». Глагол не нужен: Whisper путает его чаще всего
+#: («найди в интернете» вышло «на дешевле в интернете»), а место поиска
+#: распознаёт верно. Вопрос про сам интернет («реклама в интернете») тоже
+#: уйдёт в поиск — это пара секунд и ~2.4 тысячи токенов, а пропущенная
+#: просьба стоит лишнего вопроса.
+_ASKS_SEARCH = re.compile(
+    r"\b(?:в|по|через|из)\s+(?:интернет\w*|инет\w*|сет[иь]|гугл\w*|google|яндекс\w*)"
+    r"|\b(?:по|за|на)гугл\w*|\bгуглан\w*|\bпоищи\b|\b(?:с|через)\s+поиск\w*",
+    re.IGNORECASE,
+)
+
+
+def asks_for_search(question: str) -> bool:
+    """Просит ли сам вопрос искать в интернете."""
+    return _ASKS_SEARCH.search(question) is not None
+
+
 def clean_answer(text: str) -> str:
     """Текст ответа без служебных ссылок поиска — для карточки и журнала."""
     return _CITATION.sub("", text).strip()
@@ -261,6 +279,13 @@ class Asker:
         messages.append({"role": "user", "content": content})
         return messages
 
+    def wants_search(self, question: str) -> bool:
+        """Искать ли перед ответом: так в настройках или об этом просит вопрос.
+
+        Без просьбы Дарви отвечает сам — проверить ответ можно кнопкой.
+        """
+        return self.cfg.web_search or asks_for_search(question)
+
     def ask(
         self,
         question: str,
@@ -269,9 +294,9 @@ class Asker:
         search: bool | None = None,
         on_search: Callable[[str], None] | None = None,
     ) -> Answer:
-        """search — искать ли в интернете; None — как в настройках (ask.web_search).
+        """search — искать ли в интернете; None — решает wants_search.
         on_search получает каждый новый запрос модели к поиску, пока она ищет."""
-        wanted = self.cfg.web_search if search is None else search
+        wanted = self.wants_search(question) if search is None else search
         try:
             answer = self._answer(question, conversation, on_delta, wanted, on_search)
         except AskFailed as exc:
@@ -281,8 +306,9 @@ class Asker:
             # choice is required, but model did not call a tool» шесть раз подряд
             # на одном вопросе 7.10. Свой поиск отказывает по своим причинам:
             # кончился месячный запас Tavily, не ответил сервер. Сбой сети у
-            # модели повтор без поиска не вылечит. Если искать попросил сам
-            # человек, ответ без поиска ему не нужен — он уже есть.
+            # модели повтор без поиска не вылечит. Если искать попросили
+            # кнопкой, ответ без поиска не нужен — он уже есть. Просьба голосом
+            # откатывается, как настройка: ответа ещё нет никакого.
             failed_search = exc.search or "лимит" in str(exc) or "tool" in str(exc).lower()
             if not wanted or search is not None or not failed_search:
                 raise
