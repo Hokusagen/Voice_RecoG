@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Сборка VoiceTyper в автономный каталог.
 
-Три вещи, без которых собранный .exe молча не работает или выглядит не так:
+Четыре вещи, без которых собранный .exe молча не работает или выглядит не так:
 
 * faster_whisper тащит с собой onnx-модели детектора речи — без них падает
   vad_filter;
 * ctranslate2 и onnxruntime кладут свои DLL рядом с пакетом, а не в системный
   путь, и собираются только через collect_all;
 * шрифты из assets/fonts подключаются во время работы и в анализ импортов не
-  попадают — их надо перечислить явно.
+  попадают — их надо перечислить явно;
+* корневой сертификат НУЦ Минцифры из assets/certs — без него Python не
+  доверяет серверам GigaChat, и вопросы Дарви падают на рукопожатии TLS.
 
 Приложение не консольное, поэтому при сбое смотреть
 %APPDATA%/VoiceTyper/crash.log и voicetyper.log.
@@ -69,6 +71,9 @@ if sys.platform == "win32" and not LITE:
 # с той, что в исходниках.
 for font in glob.glob(os.path.join("assets", "fonts", "*.ttf")):
     datas.append((font, os.path.join("assets", "fonts")))
+
+# Корневой сертификат НУЦ Минцифры для GigaChat: core.gigachat ищет его так же.
+datas.append((os.path.join("assets", "certs", "russian_trusted_root_ca.pem"), os.path.join("assets", "certs")))
 
 
 a = Analysis(

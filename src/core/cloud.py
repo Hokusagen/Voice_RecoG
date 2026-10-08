@@ -31,6 +31,7 @@ import requests
 from config import AskConfig, CloudConfig, LLMConfig
 from core.ask import Answer, AskFailed, clean_answer
 from core.audio import to_wav
+from core.gigachat import GigaChatAuth, ca_file, is_gigachat
 from core.llm import LLMUnavailable, Polished, _looks_sane, _sanitize
 
 
@@ -152,13 +153,26 @@ class _Server:
     знает и отбивает весь запрос. Узнаём по первому отказу и больше не шлём.
     """
 
+    auth: GigaChatAuth | None = None
+    """У GigaChat Bearer — токен на полчаса в обмен на ключ, а не сам ключ."""
+
+    def __post_init__(self) -> None:
+        if is_gigachat(self.url) and self.api_key.strip():
+            self.auth = GigaChatAuth(self.api_key)
+
     @property
     def base(self) -> str:
         return self.url.rstrip("/")
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key.strip()}"}
+        token = self.auth.token() if self.auth is not None else self.api_key.strip()
+        return {"Authorization": f"Bearer {token}"}
+
+    @property
+    def verify(self) -> str | bool:
+        """Корневой сертификат НУЦ Минцифры — только для GigaChat, остальным certifi."""
+        return ca_file() if self.auth is not None else True
 
     @property
     def live(self) -> bool:
@@ -289,12 +303,7 @@ class CloudClient:
         trouble = "облако не настроено"
         for server in [only] if only is not None else self._chain():
             try:
-                response = self._session.post(
-                    f"{server.base}/{path}",
-                    headers=server.headers,
-                    timeout=self.cfg.timeout_s,
-                    **build(server),
-                )
+                response = self._post(server, path, build)
             except requests.RequestException as exc:
                 trouble = _describe(exc)
             else:
@@ -306,6 +315,25 @@ class CloudClient:
                 trouble = _http_error(response)
             print(f"[cloud] {server.name} не отвечает: {trouble}")
         raise CloudDown(trouble)
+
+    def _post(self, server: _Server, path: str, build: Callable[[_Server], dict]) -> requests.Response:
+        def post() -> requests.Response:
+            return self._session.post(
+                f"{server.base}/{path}",
+                headers=server.headers,
+                verify=server.verify,
+                timeout=self.cfg.timeout_s,
+                **build(server),
+            )
+
+        response = post()
+        if response.status_code == 401 and server.auth is not None:
+            # Токен отозвали или он истёк раньше, чем мы думали: один раз
+            # берём новый. Неверный ключ отобьёт уже выдача токена.
+            response.close()
+            server.auth.forget()
+            response = post()
+        return response
 
     # ---------- лимиты ----------
 
@@ -762,9 +790,13 @@ def _http_error(response: requests.Response) -> str:
         # Gemini в режиме совместимости кладёт ошибку в список из одного элемента.
         if isinstance(body, list) and body:
             body = body[0]
-        message = body["error"]["message"] or ""
+        # GigaChat пишет текст отказа прямо в message, без обёртки error.
+        message = (body["error"]["message"] if "error" in body else body["message"]) or ""
     except (ValueError, KeyError, TypeError, IndexError):
         message = ""
+    if code == 402:
+        # Так GigaChat отвечает, когда кончился запас токенов тарифа.
+        return "облако: кончилась квота тарифа"
     if code == 403:
         # Groq закрывает доступ целым диапазонам адресов, и в теле ответа это
         # не отличить от запрета на модель: подсказываем, куда смотреть.
@@ -779,6 +811,10 @@ def _http_error(response: requests.Response) -> str:
             # Так отказывает Gemini, когда кончились бесплатные запросы на сутки:
             # ждать минуту тут бесполезно, и это должно быть видно из текста.
             detail = "квота тарифа"
+        if not detail and "too many requests" in message.lower():
+            # GigaChat на бесплатном тарифе отвечает по одному запросу за раз:
+            # 429 у него — второй запрос, пока не кончился первый.
+            detail = "один запрос за раз"
         return (
             "облако: исчерпан лимит"
             + (f" — {detail}" if detail else "")
