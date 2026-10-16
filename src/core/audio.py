@@ -259,6 +259,11 @@ class AudioArchive:
             print(f"[audio] не удалось убрать старые записи: {exc}")
         return path.name
 
+    def drop(self, name: str) -> None:
+        """Убирает запись, которой не будет в журнале под этим видом."""
+        if name:
+            (self.folder / name).unlink(missing_ok=True)
+
     def _prune(self) -> None:
         files = sorted(
             ((path, path.stat()) for path in self.folder.glob("*.wav")),

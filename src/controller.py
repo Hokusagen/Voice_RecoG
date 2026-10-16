@@ -68,6 +68,10 @@ class Controller(QObject):
         """Выход ради перезапуска: новый экземпляр поднимет main после цикла событий."""
 
         self._action: str | None = None
+        self._card_was_open = False
+        """Карточка была на экране, когда началась запись: диктовку она
+        уступает сразу, а обращение к Дарви должно продолжить её разговор."""
+
         self._paused = False
         self._ready = False
         self._quota_warned = False
@@ -235,6 +239,7 @@ class Controller(QObject):
             return
 
         self._action = action
+        self._card_was_open = self.card.is_open()
         if action != "ask":
             # Диктовка — значит, человек вернулся к работе. Разговор при этом
             # не кончается: уточнение в пределах ask.followup_s его продолжит
@@ -283,7 +288,9 @@ class Controller(QObject):
                 style=self._style_for(action),
                 hotkey=getattr(self.cfg.hotkeys, action),
                 ask=action == "ask",
-                followup=action == "ask" and self.card.is_open(),
+                # Вопросу — открыта ли карточка сейчас: крестик, нажатый
+                # посреди вопроса, разговор уже закончил.
+                followup=self.card.is_open() if action == "ask" else self._card_was_open,
             )
         )
 

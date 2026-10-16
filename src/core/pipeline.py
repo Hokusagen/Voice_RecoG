@@ -19,7 +19,7 @@ from PySide6.QtCore import QObject, Signal
 from config import AudioConfig, app_data_dir
 from core import journal
 from core import stt
-from core.ask import Asker, AskFailed
+from core.ask import Asker, AskFailed, Conversation, addressed
 from core.audio import AudioArchive, loudness
 from core.cloud import CloudClient, CloudLimited, CloudUnavailable
 from core.journal import AskRecord, Attempt, Journal, Record
@@ -44,8 +44,9 @@ class Job:
     """Задать последний вопрос заново с поиском; звука у такой задачи нет."""
 
     followup: bool = False
-    """Вопрос задан при открытой карточке: он продолжает её разговор, сколько
-    бы ни прошло после ответа. Видна ли карточка, знает только поток интерфейса,
+    """Карточка была открыта, когда начали говорить: вопрос — и диктовка,
+    которая окажется обращением к Дарви, — продолжает её разговор, сколько бы
+    ни прошло после ответа. Видна ли карточка, знает только поток интерфейса,
     поэтому решение едет вместе с задачей."""
 
 
@@ -330,6 +331,10 @@ class Pipeline(QObject):
             return
         print(f"[pipeline] сырой текст: «{raw_text}»")
 
+        if job.style is not None and self._asker is not None and self._asker.cfg.by_name and addressed(raw_text):
+            self._process_addressed(job, record, raw_text, started)
+            return
+
         text = raw_text
         warning: str | None = None
 
@@ -410,6 +415,31 @@ class Pipeline(QObject):
             self._emit(Stage.WARNING, "Ничего не разобрал", "попробуйте сказать чётче")
             self._sounds.play("error")
             return
+        self._ask(record, question, conversation, started)
+
+    def _process_addressed(self, job: Job, dictation: Record, question: str, started: float) -> None:
+        """Диктовка начиналась с «Дарви, …»: она — вопрос, вставлять нечего.
+
+        Распознана она уже как диктовка, поэтому в журнал вместо записи
+        диктовки ложится запись вопроса с тем же звуком и временем Whisper.
+        """
+        conversation = self._asker.conversation(keep=job.followup)
+        record = AskRecord(
+            audio_s=dictation.audio_s, hotkey=job.hotkey, rms=dictation.rms,
+            conversation=conversation.id, turn=len(conversation.turns) + 1,
+            whisper_s=dictation.whisper_s, stt=dictation.stt, stt_error=dictation.stt_error,
+            stt_prompt=dictation.stt_prompt, question=question,
+        )
+        record.audio_file = self._asker.keep_audio(job.audio, self._sample_rate, record.id)
+        # Звук диктовки копится для замера подсказки Whisper по записям
+        # диктовок; у этой записи диктовки в журнале не будет.
+        if self._archive is not None:
+            self._archive.drop(dictation.audio_file)
+        print(f"[ask] обращение по имени ({job.hotkey})")
+        self._ask(record, question, conversation, started)
+
+    def _ask(self, record: AskRecord, question: str, conversation: Conversation, started: float) -> None:
+        """Распознанный вопрос — модели; ответ — в карточку и журнал."""
         print(f"[ask] вопрос {record.turn} в разговоре {record.conversation}: «{question}»")
         record.app = active_app()
 
