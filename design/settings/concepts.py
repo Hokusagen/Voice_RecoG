@@ -1,4 +1,4 @@
-"""Лаборатория окна настроек: одно содержание, три раскладки и два вида.
+"""Лаборатория окна настроек: одно содержание, три раскладки и три вида.
 
     venv\\Scripts\\python.exe design\\settings\\concepts.py
 
@@ -725,11 +725,16 @@ class Panel(QWidget):
         super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint)
         self.app = app
         self.setWindowTitle("Концепты настроек")
-        self._system_style = app.style().name()
-        self._system_palette = app.palette()
+        # Палитру каждого стиля запоминаем до первой своей: явно заданная
+        # палитра потом пережила бы смену стиля. windows11 в Qt 6.11 есть и
+        # на Windows 10 — значки берёт из Segoe MDL2, тёмный по системе.
+        self._styles: dict[str, tuple[str, QPalette]] = {}
+        for look, name in (("w11", "windows11"), ("system", app.style().name())):
+            app.setStyle(name)
+            self._styles[look] = (name, app.palette())
         self._dark = QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
         self.layout_kind = "sidebar"
-        self.own = True
+        self.look_kind = "own"
         self.window: ConceptWindow | None = None
         self.values = initial_values()
 
@@ -745,10 +750,14 @@ class Panel(QWidget):
         column.addSpacing(8)
         column.addWidget(QLabel("Вид"))
         looks = QButtonGroup(self)
-        for own, label in ((False, "Системный Windows"), (True, "Свой: переключатели и сегменты")):
+        for key, label in (
+            ("system", "Старый системный (windowsvista)"),
+            ("w11", "Windows 11 — стиль из Qt"),
+            ("own", "Свой: переключатели и сегменты"),
+        ):
             radio = QRadioButton(label)
-            radio.setChecked(own == self.own)
-            radio.toggled.connect(lambda on, o=own: on and self._switch(own=o))
+            radio.setChecked(key == self.look_kind)
+            radio.toggled.connect(lambda on, k=key: on and self._switch(look_kind=k))
             looks.addButton(radio)
             column.addWidget(radio)
         column.addSpacing(10)
@@ -762,18 +771,19 @@ class Panel(QWidget):
         self.show()
         self._switch()
 
-    def _switch(self, layout_kind: str | None = None, own: bool | None = None) -> None:
+    def _switch(self, layout_kind: str | None = None, look_kind: str | None = None) -> None:
         if layout_kind is not None:
             self.layout_kind = layout_kind
-        if own is not None:
-            self.own = own
-        look = Look(own=self.own, dark=self._dark)
-        if self.own:
+        if look_kind is not None:
+            self.look_kind = look_kind
+        look = Look(own=self.look_kind == "own", dark=self._dark)
+        if look.own:
             self.app.setStyle("Fusion")
             self.app.setPalette(own_palette(look.colors()))
         else:
-            self.app.setStyle(self._system_style)
-            self.app.setPalette(self._system_palette)
+            name, palette = self._styles[self.look_kind]
+            self.app.setStyle(name)
+            self.app.setPalette(palette)
         geometry = self.window.geometry() if self.window is not None else None
         if self.window is not None:
             self.window.close()
@@ -805,15 +815,15 @@ def main() -> int:
 def _shots(panel: Panel, folder: Path) -> None:
     """Снимки окон для проверки вёрстки — не замена живому прогону."""
     folder.mkdir(parents=True, exist_ok=True)
-    for own in (False, True):
+    for look in ("system", "w11", "own"):
         for kind in ("sidebar", "page", "tabs"):
-            panel._switch(layout_kind=kind, own=own)
+            panel._switch(layout_kind=kind, look_kind=look)
             QApplication.processEvents()
-            panel.window.grab().save(str(folder / f"{kind}-{'own' if own else 'system'}.png"))
+            panel.window.grab().save(str(folder / f"{kind}-{look}.png"))
             if kind == "sidebar":
                 panel.window.findChild(QListWidget, "sections").setCurrentRow(1)
                 QApplication.processEvents()
-                panel.window.grab().save(str(folder / f"darvi-{'own' if own else 'system'}.png"))
+                panel.window.grab().save(str(folder / f"darvi-{look}.png"))
 
 
 if __name__ == "__main__":
