@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QCursor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QCursor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core.state import Stage
@@ -115,23 +115,13 @@ def app_icon(size: int = 256) -> QIcon:
 
 class Tray(QSystemTrayIcon):
     pause_toggled = Signal(bool)
-    gpu_toggled = Signal(bool)
-    sounds_toggled = Signal(bool)
-    autostart_toggled = Signal(bool)
-    mode_changed = Signal(str)
-    style_changed = Signal(str)
-    backend_changed = Signal(str)
     history_picked = Signal(str)
-    config_requested = Signal()
-    journal_requested = Signal()
+    settings_requested = Signal()
     restart_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, cfg, hotkeys_cfg, llm_cfg) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.cfg = cfg
-        self._hotkeys = hotkeys_cfg
-        self._llm = llm_cfg
         self._stage = Stage.IDLE
         self._frame = 0
         self._cache: dict[Stage, list[QIcon]] = {}
@@ -147,6 +137,9 @@ class Tray(QSystemTrayIcon):
     # ---------- меню ----------
 
     def _build_menu(self) -> None:
+        # Переключатели живут в окне настроек: подменю трея в Windows
+        # закрывается от любого промаха мимо, выбирать в нём неудобно. Здесь
+        # только то, что нужно на ходу.
         menu = QMenu()
 
         self._status_action = QAction("Загружаю…", menu)
@@ -163,63 +156,12 @@ class Tray(QSystemTrayIcon):
         self._pause_action.toggled.connect(self.pause_toggled)
         menu.addAction(self._pause_action)
 
-        self._gpu_action = QAction("Отдать видеокарту", menu, checkable=True)
-        self._gpu_action.setToolTip(
-            "Whisper на процессоре, редактор выгружен: видеопамять свободна для других задач"
-        )
-        self._gpu_action.toggled.connect(self.gpu_toggled)
-        menu.addAction(self._gpu_action)
-
-        mode_menu = menu.addMenu("Режим клавиши")
-        group = QActionGroup(mode_menu)
-        group.setExclusive(True)
-        for value, label in (("hold", "Удерживать"), ("toggle", "Нажать / нажать")):
-            action = QAction(label, mode_menu, checkable=True)
-            action.setChecked(self._hotkeys.mode == value)
-            action.triggered.connect(lambda _checked, v=value: self.mode_changed.emit(v))
-            group.addAction(action)
-            mode_menu.addAction(action)
-
-        style_menu = menu.addMenu(f"Правка по {self._hotkeys.record.upper()}")
-        style_group = QActionGroup(style_menu)
-        style_group.setExclusive(True)
-        for value, label in (("careful", "Бережная: убрать мусор"), ("dry", "Сухая: только суть")):
-            action = QAction(label, style_menu, checkable=True)
-            action.setChecked(self._llm.style == value)
-            action.triggered.connect(lambda _checked, v=value: self.style_changed.emit(v))
-            style_group.addAction(action)
-            style_menu.addAction(action)
-
-        backend_menu = menu.addMenu("Редактор")
-        backend_group = QActionGroup(backend_menu)
-        backend_group.setExclusive(True)
-        for value, label in (("local", "Локально: Ollama"), ("cloud", "В облаке")):
-            action = QAction(label, backend_menu, checkable=True)
-            action.setChecked(self._llm.backend == value)
-            action.triggered.connect(lambda _checked, v=value: self.backend_changed.emit(v))
-            backend_group.addAction(action)
-            backend_menu.addAction(action)
-
         self._history_menu = menu.addMenu("История")
         self._history_menu.setEnabled(False)
-        menu.addSeparator()
 
-        sounds = QAction("Звуки", menu, checkable=True)
-        sounds.setChecked(self.cfg.sounds)
-        sounds.toggled.connect(self.sounds_toggled)
-        menu.addAction(sounds)
-
-        self._autostart_action = QAction("Запускать с Windows", menu, checkable=True)
-        self._autostart_action.toggled.connect(self.autostart_toggled)
-        menu.addAction(self._autostart_action)
-
-        open_config = QAction("Открыть настройки", menu)
-        open_config.triggered.connect(self.config_requested)
-        menu.addAction(open_config)
-
-        open_journal = QAction("Открыть журнал диктовок", menu)
-        open_journal.triggered.connect(self.journal_requested)
-        menu.addAction(open_journal)
+        settings = QAction("Настройки…", menu)
+        settings.triggered.connect(self.settings_requested)
+        menu.addAction(settings)
 
         menu.addSeparator()
         restart_action = QAction("Перезапустить", menu)
@@ -232,16 +174,6 @@ class Tray(QSystemTrayIcon):
 
         self._menu = menu
         self.setContextMenu(menu)
-
-    def set_autostart_checked(self, enabled: bool) -> None:
-        self._autostart_action.blockSignals(True)
-        self._autostart_action.setChecked(enabled)
-        self._autostart_action.blockSignals(False)
-
-    def set_gpu_released(self, released: bool) -> None:
-        self._gpu_action.blockSignals(True)
-        self._gpu_action.setChecked(released)
-        self._gpu_action.blockSignals(False)
 
     def set_history(self, entries) -> None:
         self._history_menu.clear()

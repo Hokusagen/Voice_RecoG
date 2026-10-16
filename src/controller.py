@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 from config import CONFIG_PATH, Config, build_version
 from core import autostart
 from core.ask import Asker
-from core.audio import AudioError, AudioRecorder
+from core.audio import AudioError, AudioRecorder, microphones
 from core.cloud import CloudClient
 from core.corrections import Corrector, describe
 from core.history import History
@@ -26,7 +26,8 @@ from core.state import Stage, Status
 from core.stt import WhisperEngine
 from ui import hud as hud_module
 from ui.card import AnswerCard
-from ui.tray import Tray
+from ui.settings import SettingsWindow, snapshot
+from ui.tray import Tray, app_icon
 
 #: Как часто проверять, не пора ли отпустить микрофон.
 _IDLE_CHECK_MS = 15_000
@@ -55,8 +56,17 @@ class Controller(QObject):
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
         self.card = AnswerCard(cfg.ui)
 
-        self.tray = Tray(cfg.ui, cfg.hotkeys, cfg.llm)
+        self.tray = Tray()
         self.hotkeys = HotkeyListener(cfg.hotkeys)
+
+        self._settings: SettingsWindow | None = None
+        """Окно настроек создаётся при первом открытии и дальше только прячется."""
+
+        self._launched = snapshot(cfg)
+        """С чем поднялись поля, которые читаются только при запуске."""
+
+        self._summary = ""
+        """На чём поднялись распознавание и правка — для подсказки трея."""
 
         self.pipeline = Pipeline(
             self.whisper, self.llm, self.paster, self.sounds, cfg.audio,
@@ -126,27 +136,18 @@ class Controller(QObject):
         self.card.resized.connect(self._on_card_resized)
 
         self.tray.pause_toggled.connect(self._on_pause)
-        self.tray.gpu_toggled.connect(self._on_release_gpu)
-        self.tray.sounds_toggled.connect(self._on_sounds)
-        self.tray.autostart_toggled.connect(self._on_autostart)
-        self.tray.mode_changed.connect(self._on_mode)
-        self.tray.style_changed.connect(self._on_style)
-        self.tray.backend_changed.connect(self._on_backend)
         self.tray.history_picked.connect(self._on_history_pick)
-        self.tray.config_requested.connect(self._on_open_config)
-        self.tray.journal_requested.connect(self._on_open_journal)
+        self.tray.settings_requested.connect(self._on_open_settings)
         self.tray.restart_requested.connect(self.restart)
         self.tray.quit_requested.connect(self.shutdown)
 
     # ---------- запуск и остановка ----------
 
     def start(self) -> None:
-        self.tray.set_autostart_checked(autostart.is_enabled())
-        self.tray.set_gpu_released(self.cfg.release_gpu)
         if self.cfg.llm.backend == "cloud" and not self.cloud.configured:
             print("[cloud] выбрано облако, но cloud.api_key пуст — правлю локально")
         self.tray.set_history(self.history)
-        self.tray.setToolTip(f"Голосовой ввод {build_version()} · {self.cfg.hotkeys.record.upper()}")
+        self._update_tooltip()
         self.tray.show()
 
         self.pipeline.start()
@@ -321,9 +322,9 @@ class Controller(QObject):
     @Slot(str)
     def _on_ready(self, where: str) -> None:
         self._ready = True
-        summary = f"{self.whisper.model_name or self.cfg.whisper.model} · {where}"
-        self.tray.set_summary(summary)
-        self.tray.setToolTip(f"Голосовой ввод {build_version()} · {self.cfg.hotkeys.record.upper()}\n{summary}")
+        self._summary = f"{self.whisper.model_name or self.cfg.whisper.model} · {where}"
+        self.tray.set_summary(self._summary)
+        self._update_tooltip()
         self.sounds.play("ready")
         self._show(Stage.DONE, "Готов к работе", f"зажмите {self.cfg.hotkeys.record.upper()}")
 
@@ -395,7 +396,7 @@ class Controller(QObject):
         # всё, что человек меняет мышью.
         self.cfg.save()
 
-    # ---------- меню трея ----------
+    # ---------- трей и окно настроек ----------
 
     @Slot(bool)
     def _on_pause(self, paused: bool) -> None:
@@ -409,52 +410,54 @@ class Controller(QObject):
         else:
             self._show(Stage.DONE, "Снова слушаю", f"зажмите {self.cfg.hotkeys.record.upper()}")
 
-    @Slot(bool)
-    def _on_release_gpu(self, released: bool) -> None:
-        self.cfg.release_gpu = released
-        self.cfg.save()
-        if self._action is not None:
-            self._on_cancel()
-        self.pipeline.set_gpu_released(released)
+    @Slot()
+    def _on_open_settings(self) -> None:
+        if self._settings is None:
+            self._settings = SettingsWindow(
+                self.cfg, self.hotkeys, self._launched, autostart.is_enabled, microphones, app_icon(),
+            )
+            self._settings.changed.connect(self._on_setting)
+            self._settings.restart_requested.connect(self.restart)
+            self._settings.journal_requested.connect(self._on_open_journal)
+            self._settings.config_requested.connect(self._on_open_config)
+        self._settings.open()
 
-    @Slot(bool)
-    def _on_sounds(self, enabled: bool) -> None:
-        self.cfg.ui.sounds = enabled
-        self.sounds.enabled = enabled
-        if enabled:
+    @Slot(str)
+    def _on_setting(self, path: str) -> None:
+        """Окно настроек уже записало значение в cfg: применить и сохранить.
+
+        Чего здесь нет, части приложения читают из cfg сами при каждом
+        использовании; что читается только при запуске, окно отмечает
+        просьбой перезапустить.
+        """
+        section, _, name = path.partition(".")
+        if section == "hotkeys" and name != "mode":
+            if self._action is not None:
+                self._on_cancel()
+            self.hotkeys.reload()
+            self._update_tooltip()
+        elif path == "ui.sounds":
+            self.sounds.enabled = self.cfg.ui.sounds
+        elif path == "ui.volume":
             self.sounds.volume = self.cfg.ui.volume
+            # Громкость слышна сразу: иначе её подбирают на следующей диктовке.
+            self.sounds.play("success")
+        elif path == "ui.autostart":
+            self.cfg.ui.autostart = autostart.set_enabled(self.cfg.ui.autostart)
+        elif path == "release_gpu":
+            if self._action is not None:
+                self._on_cancel()
+            self.pipeline.set_gpu_released(self.cfg.release_gpu)
+        elif path == "llm.backend" and self.cfg.llm.backend == "cloud" and not self.cloud.configured:
+            self._show(Stage.WARNING, "Нет ключа облака", "вставьте ключ Groq на вкладке «Облако» и перезапустите")
+        elif path == "audio.device" and self._action is None:
+            # Поток откроется заново на новом устройстве со следующей записью.
+            self.recorder.close()
         self.cfg.save()
 
-    @Slot(bool)
-    def _on_autostart(self, enabled: bool) -> None:
-        actual = autostart.set_enabled(enabled)
-        self.cfg.ui.autostart = actual
-        self.cfg.save()
-        if actual != enabled:
-            self.tray.set_autostart_checked(actual)
-
-    @Slot(str)
-    def _on_style(self, style: str) -> None:
-        self.cfg.llm.style = style
-        self.cfg.save()
-        other = self.cfg.hotkeys.record_alt.upper()
-        label = "сухая" if style == "dry" else "бережная"
-        self._show(Stage.DONE, f"По {self.cfg.hotkeys.record.upper()} правка {label}", f"другая по {other}")
-
-    @Slot(str)
-    def _on_backend(self, backend: str) -> None:
-        self.cfg.llm.backend = backend
-        self.cfg.save()
-        if backend == "cloud" and not self.cloud.configured:
-            self._show(Stage.WARNING, "Нет ключа облака", "вставьте cloud.api_key в настройки и перезапустите")
-            return
-        label = self.cloud.label if backend == "cloud" else f"Ollama · {self.cfg.llm.model}"
-        self._show(Stage.DONE, "Правка: " + label, "со следующей диктовки")
-
-    @Slot(str)
-    def _on_mode(self, mode: str) -> None:
-        self.cfg.hotkeys.mode = mode
-        self.cfg.save()
+    def _update_tooltip(self) -> None:
+        tip = f"Голосовой ввод {build_version()} · {self.cfg.hotkeys.record.upper()}"
+        self.tray.setToolTip(f"{tip}\n{self._summary}" if self._summary else tip)
 
     @Slot(str)
     def _on_history_pick(self, text: str) -> None:

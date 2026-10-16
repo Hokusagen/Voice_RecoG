@@ -31,6 +31,24 @@ class AudioError(RuntimeError):
     """Микрофон недоступен."""
 
 
+def microphones() -> list[tuple[int | None, str]]:
+    """Микрофоны для окна настроек: номер устройства и имя; None — системный.
+
+    Только из того же звукового API, что и системный микрофон: Windows
+    показывает каждое устройство трижды — через MME, DirectSound и WASAPI, — и
+    список из одинаковых имён выбрать нельзя.
+    """
+    found: list[tuple[int | None, str]] = [(None, "Как в системе")]
+    try:
+        default = sd.query_devices(kind="input")
+        for index, device in enumerate(sd.query_devices()):
+            if device["max_input_channels"] > 0 and device["hostapi"] == default["hostapi"]:
+                found.append((index, device["name"]))
+    except Exception as exc:  # без звуковой подсистемы окно всё равно должно открыться
+        print(f"[audio] список микрофонов недоступен: {exc}")
+    return found
+
+
 class AudioRecorder:
     def __init__(self, cfg: AudioConfig) -> None:
         self.cfg = cfg

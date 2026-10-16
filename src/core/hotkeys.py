@@ -58,6 +58,9 @@ class HotkeyListener(QObject):
     tapped = Signal(str)
     """Действие из _TAPS: одно срабатывание на нажатие, без пары «отпустили»."""
 
+    captured = Signal(str)
+    """Сочетание, нажатое в окне настроек, строкой как в конфиге; пусто — отмена."""
+
     def __init__(self, cfg: HotkeysConfig) -> None:
         super().__init__()
         self.cfg = cfg
@@ -71,6 +74,11 @@ class HotkeyListener(QObject):
         self._watched: set[str] = set()
         self._cancel_key = ""
         self._down: set[str] = set()
+
+        self._capturing = False
+        self._capture_esc = False
+        self._capture_down: set[str] = set()
+        self._capture_combo: set[str] = set()
 
     # ---------- подписка ----------
 
@@ -104,6 +112,29 @@ class HotkeyListener(QObject):
             self._backend.stop()
             self._backend = None
 
+    def reload(self) -> None:
+        """Клавиши поменяли в настройках: подписаться заново."""
+        self.stop()
+        self.start()
+
+    def capture(self, allow_esc: bool = False) -> None:
+        """Поймать следующее сочетание тем же хуком, которым слушаем.
+
+        Не событиями окна Qt: имена клавиш тогда совпадут с теми, что хук
+        увидит при диктовке, а F8, нажатая ради записи, не запустит её саму.
+        Esc отменяет запись — кроме случая, когда записывают саму отмену.
+        """
+        if self._active is not None:
+            name, self._active = self._active, None
+            self.released.emit(name)
+        self._capturing = True
+        self._capture_esc = allow_esc
+        self._capture_down.clear()
+        self._capture_combo.clear()
+
+    def stop_capture(self) -> None:
+        self._capturing = False
+
     # ---------- состояние ----------
 
     def set_enabled(self, enabled: bool) -> None:
@@ -116,6 +147,9 @@ class HotkeyListener(QObject):
     # ---------- обработка событий ----------
 
     def _on_key(self, name: str, is_down: bool) -> None:
+        if self._capturing:
+            self._on_capture_key(name, is_down)
+            return
         if name not in self._watched:
             return
 
@@ -157,6 +191,39 @@ class HotkeyListener(QObject):
                     self._active = action
                     self.pressed.emit(action)
                 return
+
+
+    def _on_capture_key(self, name: str, is_down: bool) -> None:
+        # Сочетание — всё, что было зажато одновременно; отдаём его, когда
+        # отпущена последняя клавиша: так Ctrl+Shift+F8 не превратится в Ctrl
+        # на первом же нажатии.
+        if is_down:
+            if name == "esc" and not self._capture_esc and not self._capture_down:
+                self._capturing = False
+                self.captured.emit("")
+                return
+            self._capture_down.add(name)
+            self._capture_combo.add(name)
+            return
+        self._capture_down.discard(name)
+        if self._capture_down or not self._capture_combo:
+            return
+        self._capturing = False
+        # Что зажато в обычном слушании, за время записи могло смениться.
+        self._down.clear()
+        self.captured.emit(combo_text(self._capture_combo))
+
+
+#: Порядок модификаторов в записи сочетания: как их называют вслух.
+_MODIFIERS = ("ctrl", "shift", "alt", "windows", "cmd")
+
+
+def combo_text(keys) -> str:
+    """Сочетание строкой для конфига: модификаторы впереди, «ctrl+shift+f8»."""
+    keys = set(keys)
+    head = [key for key in _MODIFIERS if key in keys]
+    tail = sorted(keys - set(_MODIFIERS))
+    return "+".join(head + tail)
 
 
 # ---------- бэкенды ----------
