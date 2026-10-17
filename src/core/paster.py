@@ -31,15 +31,48 @@ class ClipboardError(RuntimeError):
 # ---------- буфер обмена ----------
 
 if sys.platform == "win32":
+    import pywintypes
     import win32clipboard
     import win32con
+    import win32gui
+
+    _owner_lock = threading.Lock()
+    _owner_ready = threading.Event()
+    _owner_hwnd = 0
+
+    def _owner_loop() -> None:
+        global _owner_hwnd
+        try:
+            _owner_hwnd = win32gui.CreateWindowEx(
+                0, "STATIC", "VoiceTyper clipboard", 0, 0, 0, 0, 0, win32con.HWND_MESSAGE, 0, 0, None
+            )
+        finally:
+            _owner_ready.set()
+        win32gui.PumpMessages()
+
+    def _owner_window() -> int:
+        """Невидимое окно — владелец буфера обмена; 0, если создать не вышло.
+
+        Открытый с NULL буфер Windows считает открытым «тем же окном», что и у
+        любой другой программы, открывшей его с NULL: OpenClipboard проходил,
+        пока буфер держал чужой, а когда тот закрывал его, наши SetClipboardData
+        и CloseClipboard падали — «Неверный дескриптор», и прежний буфер не
+        возвращался. Окно живёт в своём потоке с циклом сообщений: владельцу
+        шлют WM_DESTROYCLIPBOARD, и без цикла чужой Ctrl+C ждал бы нас.
+        """
+        with _owner_lock:
+            if not _owner_ready.is_set():
+                threading.Thread(target=_owner_loop, name="clipboard-owner", daemon=True).start()
+                _owner_ready.wait(1.0)
+        return _owner_hwnd
 
     def _open_clipboard(attempts: int = 8, delay: float = 0.02) -> None:
         """Буфер обмена монопольный: другое приложение могло держать его открытым."""
         last: Exception | None = None
+        owner = _owner_window()
         for _ in range(attempts):
             try:
-                win32clipboard.OpenClipboard()
+                win32clipboard.OpenClipboard(owner)
                 return
             except Exception as exc:
                 last = exc
@@ -63,6 +96,9 @@ if sys.platform == "win32":
         try:
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        except pywintypes.error as exc:
+            # Наружу — как ClipboardError: поток возврата буфера ловит только его.
+            raise ClipboardError(f"буфер обмена не принял текст: {exc}") from exc
         finally:
             win32clipboard.CloseClipboard()
 
