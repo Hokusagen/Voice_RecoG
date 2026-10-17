@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# OpenBLAS из numpy при импорте заводит поток и буфер на каждое ядро: на 12
+# ядрах это 11 спящих потоков и ~350 МБ выделенной памяти. Матрицы у нас —
+# кадр плашки да блок звука, им хватает одного потока. Читается один раз при
+# загрузке numpy, поэтому — до любого импорта.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
