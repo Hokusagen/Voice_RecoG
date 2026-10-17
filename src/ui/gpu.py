@@ -15,13 +15,15 @@ from __future__ import annotations
 import ctypes
 from ctypes import POINTER, Structure, byref, c_float, c_uint, c_void_p
 
-from ui.comp import GUID, vcall
+from ui.comp import GUID, qi, vcall
 
 _HR = ctypes.HRESULT
 _P = c_void_p
 _PP = POINTER(c_void_p)
 
 IID_IDXGIFactory2 = GUID.of("50c83a1c-e072-4c48-87b0-3630fa36a6d0")
+IID_IDXGIFactory6 = GUID.of("c1b6694f-ff09-44a9-b03c-77900a0a1d17")
+IID_IDXGIAdapter1 = GUID.of("29038f61-3839-4626-91fd-086879011a05")
 IID_ID3D11Texture2D = GUID.of("6f15aaf2-d208-4e89-9ab4-489535d34f9c")
 
 FORMAT_BGRA = 87  # DXGI_FORMAT_B8G8R8A8_UNORM
@@ -62,6 +64,30 @@ def _check(hr: int, what: str) -> None:
         raise OSError(f"{what}: {hr & 0xFFFFFFFF:#010x}")
 
 
+def _low_power_adapter(factory: int) -> int | None:
+    """Экономный адаптер — тот, что на ноутбуке с гибридной графикой выводит экран.
+
+    По умолчанию устройство садится на дискретную карту, а композитор рисует на
+    встроенной: каждый кадр драйвер перегонял между ними и ждал копии, крутясь
+    в Present, — ~7 мс CPU на кадр, плашка ела три четверти ядра и теряла кадры.
+    Маленькой плашке мощь дискретной карты не нужна, а будить её ради плашки на
+    батарее и вовсе вредно. Где карта одна, она же и экономная.
+    """
+    try:
+        factory6 = qi(factory, IID_IDXGIFactory6)
+    except OSError:
+        return None  # IDXGIFactory6 — с Windows 10 1803
+    adapter = c_void_p()
+    try:
+        vcall(factory6, 29, _HR, [c_uint, ctypes.c_int, POINTER(GUID), _PP],
+              0, 1, byref(IID_IDXGIAdapter1), byref(adapter))  # EnumAdapterByGpuPreference, MINIMUM_POWER
+    except OSError:
+        return None
+    finally:
+        vcall(factory6, 2, ctypes.c_ulong, [])
+    return adapter.value
+
+
 class Texture:
     """Текстура BGRA, которую шейдер читает, а процессор заливает целиком."""
 
@@ -82,16 +108,19 @@ class Gpu:
 
     def __init__(self, width: int, height: int, hlsl: str, params_size: int) -> None:
         self.width, self.height = width, height
-        d3d11 = ctypes.WinDLL("d3d11")
-        device, context, level = c_void_p(), c_void_p(), c_uint()
-        # BGRA_SUPPORT: без него свопчейн B8G8R8A8 для композиции не создаётся.
-        _check(d3d11.D3D11CreateDevice(None, 1, None, 0x20, None, 0, 7, byref(device), byref(level),
-                                       byref(context)), "D3D11CreateDevice")
-        self.device, self.context = device.value, context.value
-
         factory = c_void_p()
         _check(ctypes.WinDLL("dxgi").CreateDXGIFactory2(0, byref(IID_IDXGIFactory2), byref(factory)),
                "CreateDXGIFactory2")
+
+        adapter = _low_power_adapter(factory.value)
+        d3d11 = ctypes.WinDLL("d3d11")
+        device, context, level = c_void_p(), c_void_p(), c_uint()
+        # BGRA_SUPPORT: без него свопчейн B8G8R8A8 для композиции не создаётся.
+        # С явным адаптером тип драйвера обязан быть UNKNOWN, без него — HARDWARE.
+        _check(d3d11.D3D11CreateDevice(c_void_p(adapter), 0 if adapter else 1, None, 0x20, None, 0, 7,
+                                       byref(device), byref(level), byref(context)), "D3D11CreateDevice")
+        self.device, self.context = device.value, context.value
+
         # FLIP_SEQUENTIAL, два буфера, предумноженная альфа: снаружи пилюли окно прозрачно.
         desc = _SwapChainDesc1(width, height, FORMAT_BGRA, 0, 1, 0, 0x20, 2, 0, 3, 1, 0)
         swapchain = c_void_p()
