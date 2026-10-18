@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9"
 """Релизный номер: он же в CHANGELOG.md и в теге, по которому собирается релиз.
 
 Вид A.B, меняется руками и только при выпуске — правила в CLAUDE.md, раздел
