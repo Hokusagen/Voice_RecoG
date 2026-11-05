@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 from config import UIConfig, AskConfig
@@ -78,9 +79,10 @@ class HistoryTests(unittest.TestCase):
         self.answer('second', 'Другой вопрос', 'Другой ответ')
         selected = []
         self.card.conversation_selected.connect(lambda key, turns: selected.append((key, turns)))
-        index = self.card._history.findData('first')
-        self.assertGreater(index, 0)
-        self.card._select_history(index)
+        self.card._show_history()
+        item = next(self.card._history.item(i) for i in range(self.card._history.count())
+                    if self.card._history.item(i).data(Qt.UserRole) == 'first')
+        self.card._select_history(item)
         self.assertEqual(selected[-1], ('first', [{'question': 'Первый вопрос', 'answer': 'Ответ'}]))
         self.assertEqual(self.card._conversation, 'first')
         self.assertIn('second', self.card._saved)
@@ -95,12 +97,18 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(restored.context(), [])
 
     def test_busy_chat_cannot_switch_context(self):
-        self.answer()
+        self.answer('old')
+        self.card._new_chat()
+        self.answer('first')
         self.card.set_busy(True)
+        self.card._show_history()
+        item = next(self.card._history.item(i) for i in range(self.card._history.count())
+                    if self.card._history.item(i).data(Qt.UserRole) == 'old')
+        self.assertFalse(item.flags() & Qt.ItemIsEnabled)
+        self.card._select_history(item)
         self.card._new_chat()
         self.assertEqual(self.card._conversation, 'first')
         self.assertFalse(self.card._new.isEnabled())
-        self.assertFalse(self.card._history.isEnabled())
 
     def test_old_journal_imports_answers_and_rechecks(self):
         rows = [
