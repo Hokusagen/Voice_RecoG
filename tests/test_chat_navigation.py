@@ -127,7 +127,7 @@ class NavigationTests(unittest.TestCase):
         restored = AnswerCard(UIConfig(), self.path)
         self.assertEqual(restored._saved["dated"]["updated_at"], stamp)
         self.assertIn(_chat_date(stamp), restored._history.item(0).text())
-        self.assertEqual(restored._history.item(0).textAlignment(), Qt.AlignCenter)
+        self.assertEqual(restored._history.item(0).textAlignment(), Qt.AlignLeft | Qt.AlignVCenter)
         restored.deleteLater()
 
     def test_old_dates_recovered_from_journal_without_inventing_missing_dates(self):

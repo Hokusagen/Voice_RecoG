@@ -609,12 +609,12 @@ class AnswerCard(QWidget):
             current = key == self._conversation
             turns = [asdict(turn) for turn in self._turns] if current else value["turns"]
             draft = self._input.text() if current else value.get("draft")
-            title = turns[0]["question"] if turns else draft or "Новый разговор"
+            title = turns[0]["question"] if turns else draft or "Новый чат"
             title = " ".join(title.split())
             state = "Текущий чат · ответ готовится…" if current and locked else "Текущий чат" if current else "Продолжить разговор"
             when = _chat_date(value.get("updated_at"))
             item = QListWidgetItem(f"{title}\n{when} · {state}")
-            item.setTextAlignment(Qt.AlignCenter)
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             item.setData(Qt.UserRole, key)
             item.setToolTip(title)
             if locked and not current:
