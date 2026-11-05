@@ -56,7 +56,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
-    QComboBox,
+    QListWidget,
+    QListWidgetItem,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -159,6 +160,7 @@ class AnswerCard(QWidget):
         self._saved: dict[str, dict] = {}
         self._stay_hidden = False
         self._busy = False
+        self._showing_history = False
         self._scale = max(0.75, float(cfg.hud_scale or 1.0))
 
         self._conversation = ""
@@ -218,6 +220,11 @@ class AnswerCard(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(6)
+        self._back = self._action("←", self._show_history)
+        self._back.setAccessibleName("История чатов")
+        self._back.setToolTip("История чатов")
+        self._back.setFixedSize(int(28 * self._scale), int(28 * self._scale))
+        head.addWidget(self._back, 0, Qt.AlignTop)
         self._question_label = QLabel()
         self._question_label.setWordWrap(True)
         self._question_label.setFont(_sized(theme.detail_font(), 12, self._scale))
@@ -229,18 +236,26 @@ class AnswerCard(QWidget):
         self._close.clicked.connect(self._on_close)
         head.addWidget(self._close, 0, Qt.AlignTop)
         layout.addLayout(head)
-        history = QHBoxLayout()
-        self._history = QComboBox()
-        self._history.setMinimumWidth(1)
-        self._history.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self._history.activated.connect(self._select_history)
-        history.addWidget(self._history, 1)
-        self._new = self._action("Новый чат", self._new_chat)
-        history.addWidget(self._new)
-        self._history_row = QWidget()
-        self._history_row.setLayout(history)
+        self._history_page = QWidget()
+        history = QVBoxLayout(self._history_page)
         history.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._history_row)
+        history.setSpacing(GAP)
+        self._new = self._action("Новый чат", self._new_chat)
+        history.addWidget(self._new, 0, Qt.AlignLeft)
+        self._history = QListWidget()
+        self._history.setFont(_sized(theme.detail_font(), 13, self._scale))
+        self._history.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._history.setTextElideMode(Qt.ElideRight)
+        self._history.setMinimumHeight(1)
+        self._history.itemClicked.connect(self._select_history)
+        self._history.itemActivated.connect(self._select_history)
+        history.addWidget(self._history, 1)
+        self._history_status = QLabel()
+        self._history_status.setWordWrap(True)
+        self._history_status.setFont(_sized(theme.detail_font(), 12, self._scale))
+        history.addWidget(self._history_status)
+        layout.addWidget(self._history_page, 1)
+        self._history_page.hide()
 
         self._text = QTextBrowser()
         self._text.setFrameShape(QTextBrowser.NoFrame)
@@ -330,8 +345,19 @@ class AnswerCard(QWidget):
             " border-radius: 8px; padding: 6px; }"
         )
         self._history.setStyleSheet(
-            f"QComboBox {{ color: {text}; background: {hover}; border: 1px solid {line}; padding: 4px; }}"
-            "QComboBox QAbstractItemView { color: #edf2ff; background: #252c3e; selection-background-color: #354360; }"
+            f"QListWidget {{ color: {text}; background: transparent; border: none; outline: 0; }}"
+            "QListWidget::item { padding: 10px 12px; margin: 2px 0; border-radius: 8px; }"
+            f"QListWidget::item:hover, QListWidget::item:selected {{ background: {hover}; color: {text}; }}"
+            f"QListWidget::item:disabled {{ color: {muted}; }}"
+            f"QScrollBar:vertical {{ width: 6px; background: transparent; }}"
+            f"QScrollBar::handle:vertical {{ background: {line}; border-radius: 3px; min-height: 24px; }}"
+            "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
+            "QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }"
+        )
+        self._history_status.setStyleSheet(f"color: {muted}; background: transparent;")
+        self._back.setStyleSheet(
+            f"QPushButton {{ color: {text}; background: transparent; border: none; border-radius: 8px; }}"
+            f"QPushButton:hover, QPushButton:focus {{ background: {hover}; }}"
         )
         self._hint.setStyleSheet(f"color: {muted}; background: transparent;")
         self._close.setStyleSheet(
@@ -346,6 +372,7 @@ class AnswerCard(QWidget):
 
     def open_chat(self, hotkey: str = "F8") -> None:
         self._stay_hidden = False
+        self._show_conversation()
         self._hint.setText(f"Голосовой вопрос — {hotkey} · Enter — отправить")
         if not self.is_open():
             self._appear()
@@ -478,6 +505,7 @@ class AnswerCard(QWidget):
         self._previous = current if recheck else None
         self._turns.append(replace(current, note=note) if recheck else _Turn(question, note=note))
         self._pending, self._waiting, self._pin = index, True, index
+        self._refresh_history()
         if self.is_open():
             self._render()
 
@@ -532,11 +560,11 @@ class AnswerCard(QWidget):
 
     def prepare_question(self) -> None:
         self._stay_hidden = False
+        self._show_conversation()
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
-        self._new.setEnabled(not busy)
-        self._history.setEnabled(not busy)
+        self._refresh_history()
 
     @property
     def conversation_id(self) -> str:
@@ -547,12 +575,49 @@ class AnswerCard(QWidget):
                 for i, t in enumerate(self._turns)
                 if not t.failed and i != self._pending and t.answer]
 
+    def _show_history(self) -> None:
+        self.save_history()
+        self._showing_history = True
+        self._history_page.show()
+        for widget in (self._back, self._text, self._actions, self._composer, self._hint):
+            widget.hide()
+        self._question_label.setText("История чатов")
+        self._history.setFocus()
+        self._retarget()
+
+    def _show_conversation(self) -> None:
+        self._showing_history = False
+        self._history_page.hide()
+        for widget in (self._back, self._text, self._composer, self._hint):
+            widget.show()
+        self._render()
+
     def _refresh_history(self) -> None:
+        # Просмотр списка не меняет контекст: поток продолжает писать в свой чат.
+        locked = self._busy or self._pending is not None
+        self._new.setEnabled(not locked)
+        scroll = self._history.verticalScrollBar().value()
         self._history.clear()
-        self._history.addItem("Текущий чат", self._conversation)
-        for key, value in reversed(list(self._saved.items())):
-            if key != self._conversation and value["turns"]:
-                self._history.addItem(value["turns"][0]["question"][:70], key)
+        keys = [self._conversation] + [key for key in reversed(self._saved) if key != self._conversation]
+        for key in keys:
+            value = self._saved.get(key, {"turns": [], "draft": ""})
+            current = key == self._conversation
+            turns = [asdict(turn) for turn in self._turns] if current else value["turns"]
+            draft = self._input.text() if current else value.get("draft")
+            title = turns[0]["question"] if turns else draft or "Новый разговор"
+            title = " ".join(title.split())
+            state = "Текущий чат · ответ готовится…" if current and locked else "Текущий чат" if current else "Продолжить разговор"
+            item = QListWidgetItem(f"{title}\n{state}")
+            item.setData(Qt.UserRole, key)
+            item.setToolTip(title)
+            if locked and not current:
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+            self._history.addItem(item)
+        self._history.verticalScrollBar().setValue(scroll)
+        self._history_status.setText(
+            "Ответ продолжается в текущем чате. Другой чат можно открыть после завершения."
+            if locked else "Выберите разговор или начните новый."
+        )
 
     def save_history(self) -> None:
         if self._conversation or self._input.text():
@@ -624,23 +689,31 @@ class AnswerCard(QWidget):
         self._input.setText(value.get("draft", ""))
         self._render()
 
-    def _select_history(self, index: int) -> None:
-        if self._busy:
+    def _select_history(self, item: QListWidgetItem) -> None:
+        key = item.data(Qt.UserRole)
+        if key == self._conversation:
+            # Даже восстановление того же чата обнулило бы незавершённый ход.
+            self._show_conversation()
+            self._input.setFocus()
             return
-        key = self._history.itemData(index)
+        if self._busy or self._pending is not None or key not in self._saved:
+            return
         self.save_history()
         self._restore(key)
         self.conversation_selected.emit(key, self.context())
         self.save_history()
+        self._show_conversation()
+        self._input.setFocus()
 
     def _new_chat(self) -> None:
-        if self._busy:
+        if self._busy or self._pending is not None:
             return
         self.save_history()
         self._saved.pop("", None)
         self._restore("")
         self.conversation_selected.emit("", [])
         self.save_history()
+        self._show_conversation()
         self._input.setFocus()
 
     def _flash(self, button: QPushButton, text: str) -> None:
@@ -721,7 +794,8 @@ class AnswerCard(QWidget):
             if block.blockFormat().property(_ROLE) == "question":
                 self._anchors.append(block.position())
             block = block.next()
-        self._question_label.setText(self._turns[0].question if self._turns else "Чат с Дарви")
+        self._question_label.setText("История чатов" if self._showing_history else
+                                     self._turns[0].question if self._turns else "Чат с Дарви")
         self._update_actions()
         doc.size()  # раскладка целиком, чтобы прокрутка знала новую длину
         if self._pin is None:
@@ -782,7 +856,7 @@ class AnswerCard(QWidget):
         rechecking = self._waiting and self._previous is not None
         ready = last is not None and bool(last.answer.strip()) and not last.failed
         ready = ready and (self._pending is None or rechecking)
-        self._actions.setVisible(ready)
+        self._actions.setVisible(ready and not self._showing_history)
         if ready:
             self._recheck.setVisible(not last.sources)
             self._recheck.setEnabled(self._pending is None)
@@ -829,12 +903,16 @@ class AnswerCard(QWidget):
     def _wanted_height(self) -> int:
         """Высота, при которой виден весь разговор; потолок — забота вызывающего."""
         inner = self._width - 2 * PAD
+        if self._showing_history:
+            row = self._history.sizeHintForRow(0)
+            return (2 * PAD + self._close.height() + 3 * GAP + self._new.sizeHint().height()
+                    + max(1, min(6, self._history.count())) * max(row, 54)
+                    + self._history_status.heightForWidth(inner))
         text_h = self._text_height(self._width - PAD - (PAD - 6))
-        total = PAD - 4 + max(self._question_label.heightForWidth(inner - 30), self._close.height())
+        total = PAD - 4 + max(self._question_label.heightForWidth(inner - 64), self._back.height())
         total += GAP + text_h + 4
         if not self._actions.isHidden():
             total += GAP + self._actions.sizeHint().height()
-        total += GAP + self._history_row.sizeHint().height()
         total += GAP + self._composer.sizeHint().height()
         total += GAP + self._hint.heightForWidth(inner)
         total += PAD
