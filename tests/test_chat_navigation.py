@@ -6,10 +6,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtTest import QTest
 from config import UIConfig
-from ui.card import AnswerCard
+from ui.card import AnswerCard, _ChatList, _chat_date
 
 
 class NavigationTests(unittest.TestCase):
@@ -114,6 +116,51 @@ class NavigationTests(unittest.TestCase):
         self.card.finish([])
         self.assertFalse(self.card.is_open())
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["chats"]["active"]["turns"][0]["answer"], "Ответ после закрытия")
+
+    def test_date_survives_saving_and_reopening(self):
+        self.answer("dated")
+        stamp = self.card._saved["dated"]["updated_at"]
+        self.card._show_history()
+        self.card._select_history(self.item("dated"))
+        self.card.save_history()
+        self.assertEqual(self.card._saved["dated"]["updated_at"], stamp)
+        restored = AnswerCard(UIConfig(), self.path)
+        self.assertEqual(restored._saved["dated"]["updated_at"], stamp)
+        self.assertIn(_chat_date(stamp), restored._history.item(0).text())
+        self.assertEqual(restored._history.item(0).textAlignment(), Qt.AlignCenter)
+        restored.deleteLater()
+
+    def test_old_dates_recovered_from_journal_without_inventing_missing_dates(self):
+        self.path.write_text(json.dumps({"current": "old", "chats": {
+            "old": {"turns": [], "draft": "Старый"},
+            "unknown": {"turns": [], "draft": "Без даты"}}}), encoding="utf-8")
+        (self.path.parent / "dictations.jsonl").write_text(
+            json.dumps({"kind": "ask", "conversation": "old", "at": "2026-10-03T12:15:00"}),
+            encoding="utf-8")
+        restored = AnswerCard(UIConfig(), self.path)
+        self.assertEqual(restored._saved["old"]["updated_at"], "2026-10-03T12:15:00")
+        self.assertIn("03.10.26 · 12:15", restored._history.item(0).text())
+        self.assertIn("Дата неизвестна", restored._history.item(1).text())
+        restored.deleteLater()
+
+    def test_wheel_moves_through_intermediate_positions_and_stays_in_bounds(self):
+        listing = _ChatList()
+        listing.resize(300, 160)
+        listing.addItems([f"Разговор {i}" for i in range(60)])
+        listing.show()
+        QTest.qWait(30)
+        bar = listing.verticalScrollBar()
+        positions = []
+        bar.valueChanged.connect(positions.append)
+        event = QWheelEvent(QPointF(50, 50), QPointF(50, 50), QPoint(), QPoint(0, -120),
+                            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        listing.wheelEvent(event)
+        QTest.qWait(260)
+        self.assertGreater(len(set(positions)), 2)
+        self.assertGreater(bar.value(), 0)
+        self.assertLessEqual(bar.value(), bar.maximum())
+        listing.hide()
+        listing.deleteLater()
 
 
 if __name__ == "__main__":

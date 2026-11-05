@@ -30,13 +30,14 @@ from __future__ import annotations
 
 import sys
 import json
+from datetime import datetime
 from pathlib import Path
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlparse
 
 import numpy as np
-from PySide6.QtCore import QRect, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -242,7 +243,7 @@ class AnswerCard(QWidget):
         history.setSpacing(GAP)
         self._new = self._action("Новый чат", self._new_chat)
         history.addWidget(self._new, 0, Qt.AlignLeft)
-        self._history = QListWidget()
+        self._history = _ChatList()
         self._history.setFont(_sized(theme.detail_font(), 13, self._scale))
         self._history.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._history.setTextElideMode(Qt.ElideRight)
@@ -405,6 +406,8 @@ class AnswerCard(QWidget):
         if conversation != self._conversation:
             self.save_history()
             self._conversation, self._turns = conversation, []
+        value = self._saved.setdefault(conversation, {"turns": [], "draft": ""})
+        value["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         self._begin(turn - 1, question, searching)
 
     @Slot(str)
@@ -582,11 +585,13 @@ class AnswerCard(QWidget):
         for widget in (self._back, self._text, self._actions, self._composer, self._hint):
             widget.hide()
         self._question_label.setText("История чатов")
+        self._question_label.setAlignment(Qt.AlignCenter)
         self._history.setFocus()
         self._retarget()
 
     def _show_conversation(self) -> None:
         self._showing_history = False
+        self._question_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._history_page.hide()
         for widget in (self._back, self._text, self._composer, self._hint):
             widget.show()
@@ -607,7 +612,9 @@ class AnswerCard(QWidget):
             title = turns[0]["question"] if turns else draft or "Новый разговор"
             title = " ".join(title.split())
             state = "Текущий чат · ответ готовится…" if current and locked else "Текущий чат" if current else "Продолжить разговор"
-            item = QListWidgetItem(f"{title}\n{state}")
+            when = _chat_date(value.get("updated_at"))
+            item = QListWidgetItem(f"{title}\n{when} · {state}")
+            item.setTextAlignment(Qt.AlignCenter)
             item.setData(Qt.UserRole, key)
             item.setToolTip(title)
             if locked and not current:
@@ -626,7 +633,8 @@ class AnswerCard(QWidget):
                 # Прерванный ответ сохраняется для чтения, но не как контекст модели.
                 turns[self._pending]["failed"] = True
                 turns[self._pending]["note"] = "Ответ не завершён"
-            self._saved[self._conversation] = {"turns": turns, "draft": self._input.text()}
+            value = self._saved.setdefault(self._conversation, {})
+            value.update(turns=turns, draft=self._input.text())
         self._refresh_history()
         if self._history_path is None:
             return
@@ -653,7 +661,10 @@ class AnswerCard(QWidget):
                         if (row.get("kind") != "ask" or row.get("error") or
                                 not all(isinstance(value, str) and value for value in (key, question, answer))):
                             continue
-                        turns = self._saved.setdefault(key, {"turns": [], "draft": ""})["turns"]
+                        value = self._saved.setdefault(key, {"turns": [], "draft": ""})
+                        if _chat_date(row.get("at")) != "Дата неизвестна":
+                            value["updated_at"] = row["at"]
+                        turns = value["turns"]
                         index = min(max(0, int(row.get("turn", 1)) - 1), len(turns))
                         del turns[index:]
                         turns.append(asdict(_Turn(question, answer, sources=row.get("sources") or [])))
@@ -678,7 +689,27 @@ class AnswerCard(QWidget):
                 self._restore(data.get("current", ""))
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 self._hint.setText("Не удалось прочитать историю чатов")
+        self._recover_dates()
         self._refresh_history()
+
+    def _recover_dates(self) -> None:
+        """Старый формат не хранил дату; время файла не является датой разговора."""
+        missing = {key for key, value in self._saved.items() if not value.get("updated_at")}
+        if not missing or self._history_path is None:
+            return
+        try:
+            with (self._history_path.parent / "dictations.jsonl").open(encoding="utf-8") as source:
+                for line in source:
+                    try:
+                        row = json.loads(line)
+                        key = row.get("conversation")
+                        if (row.get("kind") == "ask" and key in missing
+                                and _chat_date(row.get("at")) != "Дата неизвестна"):
+                            self._saved[key]["updated_at"] = row["at"]
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+        except OSError:
+            pass
 
     def _restore(self, key: str) -> None:
         value = self._saved.get(key, {"turns": [], "draft": ""})
@@ -1005,6 +1036,54 @@ class AnswerCard(QWidget):
         painter.setPen(QPen(glass.edge_bottom if self._light else glass.edge_top.darker(160), 1.0))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+
+
+class _ChatList(QListWidget):
+    """Колесо двигает ленту в пикселях, без скачков на целую строку чата."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        bar = self.verticalScrollBar()
+        self._scroll = QPropertyAnimation(bar, b"value", self)
+        self._scroll.setDuration(180)
+        self._scroll.setEasingCurve(QEasingCurve.OutCubic)
+        bar.sliderPressed.connect(self._scroll.stop)
+        bar.actionTriggered.connect(self._scroll.stop)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 — имя из Qt
+        bar = self.verticalScrollBar()
+        if not event.pixelDelta().isNull():
+            # Тачпад уже выдаёт плавное движение: повторная анимация добавляет задержку.
+            self._scroll.stop()
+            bar.setValue(bar.value() - event.pixelDelta().y())
+        else:
+            delta = event.angleDelta().y() / 120 * QApplication.wheelScrollLines() * self.fontMetrics().height()
+            running = self._scroll.state() == QPropertyAnimation.Running
+            target = self._scroll.endValue() if running else bar.value()
+            # При смене направления не нужно сначала доезжать к прежней цели.
+            if running and (target - bar.value()) * delta > 0:
+                target = bar.value()
+            self._scroll.stop()
+            self._scroll.setStartValue(bar.value())
+            self._scroll.setEndValue(round(max(bar.minimum(), min(bar.maximum(), target - delta))))
+            self._scroll.start()
+        event.accept()
+
+    def clear(self) -> None:
+        self._scroll.stop()
+        super().clear()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 — имя из Qt
+        self._scroll.stop()
+        super().hideEvent(event)
+
+
+def _chat_date(value) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%y · %H:%M")
+    except (ValueError, TypeError, OverflowError, OSError):
+        return "Дата неизвестна"
 
 
 class _Grip(QWidget):
