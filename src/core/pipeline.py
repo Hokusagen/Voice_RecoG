@@ -53,6 +53,12 @@ class Job:
     поэтому решение едет вместе с задачей."""
 
 
+@dataclass
+class _RestoreConversation:
+    key: str
+    turns: list[dict]
+
+
 class _Shutdown:
     """Маркер конца очереди."""
 
@@ -69,6 +75,7 @@ class _ReleaseGpu:
 
 
 class Pipeline(QObject):
+    job_finished = Signal()
     status = Signal(object)
     """Очередное состояние (core.state.Status) для HUD и трея."""
 
@@ -155,6 +162,10 @@ class Pipeline(QObject):
     def submit(self, job: Job) -> None:
         self._queue.put(job)
 
+    def restore_conversation(self, key: str, turns: list[dict]) -> None:
+        # Контекст меняет только рабочий поток, между запросами к модели.
+        self._queue.put(_RestoreConversation(key, turns))
+
     def set_gpu_released(self, released: bool) -> None:
         """Отдать видеокарту или забрать обратно; выполнится между фразами."""
         self._queue.put(_ReleaseGpu(released))
@@ -169,7 +180,10 @@ class Pipeline(QObject):
             if isinstance(item, _Shutdown):
                 return
             try:
-                if isinstance(item, _ReleaseGpu):
+                if isinstance(item, _RestoreConversation):
+                    if self._asker is not None:
+                        self._asker.restore(item.key, item.turns)
+                elif isinstance(item, _ReleaseGpu):
                     self._switch_gpu(item.released)
                 else:
                     self._process(item)
@@ -177,6 +191,11 @@ class Pipeline(QObject):
                 print(f"[pipeline] непредвиденный сбой: {exc}")
                 self._emit(Stage.ERROR, "Сбой обработки", str(exc))
                 self._sounds.play("error")
+                if isinstance(item, Job):
+                    self.answer_failed.emit("Сбой обработки")
+            finally:
+                if isinstance(item, Job):
+                    self.job_finished.emit()
 
     def _load_models(self) -> bool:
         detail = (

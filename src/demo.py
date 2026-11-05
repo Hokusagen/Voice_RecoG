@@ -356,6 +356,7 @@ def chat_demo(cfg: Config) -> dict:
     """Ручная проверка ввода и открытия чата без запросов в облако."""
     from ui.card import AnswerCard
     from ui.tray import Tray
+    from ui.chat_button import ChatButton
 
     card = AnswerCard(cfg.ui)
     card.setWindowTitle("VoiceTyper — демо чата")
@@ -363,19 +364,21 @@ def chat_demo(cfg: Config) -> dict:
     tray.chat_requested.connect(card.open_chat)
     tray.quit_requested.connect(QApplication.quit)
     tray.show()
-    turns = []
+    button = ChatButton(cfg.ui)
+    button.open_requested.connect(card.open_chat)
+    card.opened.connect(button.hide)
+    card.closed.connect(button.show)
 
     def reply(question: str) -> None:
-        turns.append(question)
+        from uuid import uuid4
         card.clear_question()
-        card.start("demo-chat", len(turns), question, False)
+        card.start(card._conversation or str(uuid4()), len(card._turns) + 1, question, False)
         card.feed("Это демонстрационный ответ. Вопрос принят: " + question)
         card.finish([])
 
     card.question_requested.connect(reply)
-    card.closed.connect(turns.clear)
     card.open_chat(cfg.hotkeys.record.upper())
-    return {"card": card, "tray": tray}
+    return {"card": card, "tray": tray, "button": button}
 
 
 def main() -> int:

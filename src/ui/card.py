@@ -29,8 +29,10 @@ Windows пропускает к окнам под ним, так что пуст
 from __future__ import annotations
 
 import sys
+import json
+from pathlib import Path
 import unicodedata
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from urllib.parse import urlparse
 
 import numpy as np
@@ -54,6 +56,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QComboBox,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -130,6 +133,8 @@ class _Turn:
 
 class AnswerCard(QWidget):
     question_requested = Signal(str)
+    conversation_selected = Signal(str, list)
+    opened = Signal()
     insert_requested = Signal(str)
     """«Вставить»: последний ответ без разметки — в окно, где курсор."""
 
@@ -137,19 +142,23 @@ class AnswerCard(QWidget):
     """«Проверить в интернете»: последний вопрос заново с поиском."""
 
     closed = Signal()
-    """Человек закрыл карточку крестиком — разговор окончен."""
+    """Человек спрятал карточку; разговор можно продолжить."""
 
     resized = Signal(int)
     """Ширину дотянули и отпустили мышь: новая ширина, px до масштаба. В
     ui.card_width она уже записана — осталось сохранить настройки."""
 
-    def __init__(self, cfg: UIConfig) -> None:
+    def __init__(self, cfg: UIConfig, history_path: Path | None = None) -> None:
         flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         super().__init__(None, flags)
         self.setWindowTitle("Чат с Дарви")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.cfg = cfg
+        self._history_path = history_path
+        self._saved: dict[str, dict] = {}
+        self._stay_hidden = False
+        self._busy = False
         self._scale = max(0.75, float(cfg.hud_scale or 1.0))
 
         self._conversation = ""
@@ -163,11 +172,6 @@ class AnswerCard(QWidget):
         self._previous: _Turn | None = None
         """Перепроверяемый ход, каким он был: его ответ виден до первого слова
         нового и возвращается, если перепроверка не удалась."""
-
-        self._deferred: tuple[str, int, str, bool] | None = None
-        """Вопрос, который покажется с первым словом ответа: карточка скрыта
-        или разговор новый. Пустой карточка не нужна, а прежний разговор на
-        экране лучше нового без ответа."""
 
         self._pin: int | None = None
         """Ход, чей вопрос держим у верхнего края, пока человек не листал сам."""
@@ -198,6 +202,7 @@ class AnswerCard(QWidget):
         self._hiding = False
 
         self._build()
+        self._load_history()
 
     # ---------- сборка ----------
 
@@ -224,6 +229,18 @@ class AnswerCard(QWidget):
         self._close.clicked.connect(self._on_close)
         head.addWidget(self._close, 0, Qt.AlignTop)
         layout.addLayout(head)
+        history = QHBoxLayout()
+        self._history = QComboBox()
+        self._history.setMinimumWidth(1)
+        self._history.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._history.activated.connect(self._select_history)
+        history.addWidget(self._history, 1)
+        self._new = self._action("Новый чат", self._new_chat)
+        history.addWidget(self._new)
+        self._history_row = QWidget()
+        self._history_row.setLayout(history)
+        history.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._history_row)
 
         self._text = QTextBrowser()
         self._text.setFrameShape(QTextBrowser.NoFrame)
@@ -306,11 +323,15 @@ class AnswerCard(QWidget):
             f"QPushButton:hover {{ background: {hover}; }}"
             f"QPushButton:disabled {{ color: {muted}; }}"
         )
-        for widget in (self._insert, self._copy, self._recheck, self._send):
+        for widget in (self._insert, self._copy, self._recheck, self._send, self._new):
             widget.setStyleSheet(button)
         self._input.setStyleSheet(
             f"QLineEdit {{ color: {text}; background: {hover}; border: 1px solid {line};"
             " border-radius: 8px; padding: 6px; }"
+        )
+        self._history.setStyleSheet(
+            f"QComboBox {{ color: {text}; background: {hover}; border: 1px solid {line}; padding: 4px; }}"
+            "QComboBox QAbstractItemView { color: #edf2ff; background: #252c3e; selection-background-color: #354360; }"
         )
         self._hint.setStyleSheet(f"color: {muted}; background: transparent;")
         self._close.setStyleSheet(
@@ -324,6 +345,7 @@ class AnswerCard(QWidget):
     # ---------- что показывать ----------
 
     def open_chat(self, hotkey: str = "F8") -> None:
+        self._stay_hidden = False
         self._hint.setText(f"Голосовой вопрос — {hotkey} · Enter — отправить")
         if not self.is_open():
             self._appear()
@@ -353,23 +375,14 @@ class AnswerCard(QWidget):
         его расслышали, пока модель думает или ищет. Скрытая карточка и новый
         разговор ждут первого слова ответа.
         """
-        if self.is_open():
-            if conversation != self._conversation:
-                self._conversation, self._turns = conversation, []
-            self._deferred = None
-            self._begin(turn - 1, question, searching)
-        else:
-            self._deferred = (conversation, turn - 1, question, searching)
+        if conversation != self._conversation:
+            self.save_history()
+            self._conversation, self._turns = conversation, []
+        self._begin(turn - 1, question, searching)
 
     @Slot(str)
     def feed(self, piece: str) -> None:
         """Очередной кусок ответа из потока."""
-        if self._deferred is not None:
-            conversation, index, question, searching = self._deferred
-            self._deferred = None
-            if conversation != self._conversation:
-                self._conversation, self._turns = conversation, []
-            self._begin(index, question, searching)
         if self._pending is None:
             return
         turn = self._turns[self._pending]
@@ -379,9 +392,9 @@ class AnswerCard(QWidget):
             self._waiting = False
             turn.answer, turn.sources, turn.note = "", [], ""
         turn.answer += piece
-        if not self.is_open():
+        if not self.is_open() and not self._stay_hidden:
             self._appear()
-        elif not self._render_timer.isActive():
+        elif self.is_open() and not self._render_timer.isActive():
             self._render_timer.start()
 
     @Slot(str)
@@ -401,7 +414,6 @@ class AnswerCard(QWidget):
     @Slot(list)
     def finish(self, sources: list[str]) -> None:
         """Ответ дописан: источники под ним и кнопки."""
-        self._deferred = None
         if self._pending is None:
             return
         if self._waiting and self._previous is not None:
@@ -411,6 +423,7 @@ class AnswerCard(QWidget):
             turn = self._turns[self._pending]
             turn.sources, turn.note = list(sources), ""
         self._pending, self._previous, self._waiting = None, None, False
+        self.save_history()
         self._render()
 
     @Slot(str)
@@ -420,7 +433,6 @@ class AnswerCard(QWidget):
         Скрытая карточка не появляется — ошибку покажет плашка. У открытой ход
         получает строку «не вышло», а перепроверка возвращает прежний ответ.
         """
-        self._deferred = None
         note = f"не вышло: {reason}"
         if self._pending is None:
             # Перепроверка упала, не дойдя до вопроса, — а кнопка уже
@@ -435,6 +447,7 @@ class AnswerCard(QWidget):
             turn = self._turns[self._pending]
             turn.note, turn.failed = note, True
         self._pending, self._previous, self._waiting = None, None, False
+        self.save_history()
         self._render()
 
     def dismiss(self) -> None:
@@ -503,14 +516,132 @@ class AnswerCard(QWidget):
         self.recheck_requested.emit()
 
     def _on_close(self) -> None:
-        # Разговор окончен: хвост ответа, если он ещё идёт, карточку не вернёт.
-        self._pending = self._previous = self._deferred = None
-        self._waiting = False
-        self._conversation = ""
-        self._turns.clear()
-        self._input.clear()
+        # Поток ответа продолжает заполнять историю, но не открывает окно сам.
+        self._stay_hidden = True
+        self.save_history()
         self.dismiss()
         self.closed.emit()
+
+    def hideEvent(self, event) -> None:
+        self.closed.emit()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._on_close()
+        event.ignore()
+
+    def prepare_question(self) -> None:
+        self._stay_hidden = False
+
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._new.setEnabled(not busy)
+        self._history.setEnabled(not busy)
+
+    @property
+    def conversation_id(self) -> str:
+        return self._conversation
+
+    def context(self) -> list[dict]:
+        return [{"question": t.question, "answer": t.answer}
+                for i, t in enumerate(self._turns)
+                if not t.failed and i != self._pending and t.answer]
+
+    def _refresh_history(self) -> None:
+        self._history.clear()
+        self._history.addItem("Текущий чат", self._conversation)
+        for key, value in reversed(list(self._saved.items())):
+            if key != self._conversation and value["turns"]:
+                self._history.addItem(value["turns"][0]["question"][:70], key)
+
+    def save_history(self) -> None:
+        if self._conversation or self._input.text():
+            turns = [asdict(t) for t in self._turns]
+            if self._pending is not None:
+                # Прерванный ответ сохраняется для чтения, но не как контекст модели.
+                turns[self._pending]["failed"] = True
+                turns[self._pending]["note"] = "Ответ не завершён"
+            self._saved[self._conversation] = {"turns": turns, "draft": self._input.text()}
+        self._refresh_history()
+        if self._history_path is None:
+            return
+        try:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._history_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"current": self._conversation, "chats": self._saved},
+                                           ensure_ascii=False), encoding="utf-8")
+            temporary.replace(self._history_path)
+        except OSError:
+            self._hint.setText("Не удалось сохранить историю на диск")
+
+    def _import_journal(self) -> None:
+        """До появления чатов готовые ответы жили только в журнале диктовок."""
+        journal = self._history_path.parent / "dictations.jsonl"
+        if not journal.exists():
+            return
+        try:
+            with journal.open(encoding="utf-8") as source:
+                for line in source:
+                    try:
+                        row = json.loads(line)
+                        key, question, answer = row.get("conversation"), row.get("question"), row.get("answer")
+                        if (row.get("kind") != "ask" or row.get("error") or
+                                not all(isinstance(value, str) and value for value in (key, question, answer))):
+                            continue
+                        turns = self._saved.setdefault(key, {"turns": [], "draft": ""})["turns"]
+                        index = min(max(0, int(row.get("turn", 1)) - 1), len(turns))
+                        del turns[index:]
+                        turns.append(asdict(_Turn(question, answer, sources=row.get("sources") or [])))
+                        self._conversation = key
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+            self._restore(self._conversation)
+        except OSError:
+            self._hint.setText("Не удалось прочитать прежние ответы из журнала")
+
+    def _load_history(self) -> None:
+        if self._history_path is not None and not self._history_path.exists():
+            self._import_journal()
+        if self._history_path is not None and self._history_path.exists():
+            try:
+                data = json.loads(self._history_path.read_text(encoding="utf-8"))
+                saved = data["chats"]
+                for value in saved.values():
+                    for turn in value["turns"]:
+                        _Turn(**turn)
+                self._saved = saved
+                self._restore(data.get("current", ""))
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                self._hint.setText("Не удалось прочитать историю чатов")
+        self._refresh_history()
+
+    def _restore(self, key: str) -> None:
+        value = self._saved.get(key, {"turns": [], "draft": ""})
+        self._conversation = key
+        self._turns = [_Turn(**turn) for turn in value["turns"]]
+        self._pending = self._previous = self._pin = None
+        self._waiting = False
+        self._input.setText(value.get("draft", ""))
+        self._render()
+
+    def _select_history(self, index: int) -> None:
+        if self._busy:
+            return
+        key = self._history.itemData(index)
+        self.save_history()
+        self._restore(key)
+        self.conversation_selected.emit(key, self.context())
+        self.save_history()
+
+    def _new_chat(self) -> None:
+        if self._busy:
+            return
+        self.save_history()
+        self._saved.pop("", None)
+        self._restore("")
+        self.conversation_selected.emit("", [])
+        self.save_history()
+        self._input.setFocus()
 
     def _flash(self, button: QPushButton, text: str) -> None:
         button.setText(text)
@@ -544,6 +675,7 @@ class AnswerCard(QWidget):
         self._height.snap(0.0)
         self._place()
         self.show()
+        self.opened.emit()
         self._retarget()
         self._tick.start()
 
@@ -702,6 +834,7 @@ class AnswerCard(QWidget):
         total += GAP + text_h + 4
         if not self._actions.isHidden():
             total += GAP + self._actions.sizeHint().height()
+        total += GAP + self._history_row.sizeHint().height()
         total += GAP + self._composer.sizeHint().height()
         total += GAP + self._hint.heightForWidth(inner)
         total += PAD

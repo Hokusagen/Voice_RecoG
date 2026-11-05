@@ -19,6 +19,8 @@ class ChatTests(unittest.TestCase):
         c.cfg = Config()
         c._action = None
         c._ready = True
+        c._pending_jobs = 0
+        c._submit.side_effect = lambda job: Controller._submit(c, job)
         c.card.is_open.return_value = opened
         c.recorder.stop_capture.return_value = np.ones(16000, dtype=np.float32)
         c.recorder.duration_of.return_value = 1.0
@@ -66,6 +68,24 @@ class ChatTests(unittest.TestCase):
         p._asker.keep_audio.assert_not_called()
         self.assertEqual(p._ask.call_args.args[1], 'Вопрос')
         p._asker.conversation.assert_called_once_with(keep=True)
+
+    def test_context_selection_is_queued_between_jobs(self):
+        import queue
+        from core.pipeline import _Shutdown
+        p = Mock()
+        p._queue = queue.Queue()
+        first = Job(np.zeros(0), None, '', ask=True, question='Первый')
+        second = Job(np.zeros(0), None, '', ask=True, question='Второй')
+        order = []
+        p._process.side_effect = lambda job: order.append(job.question)
+        p._asker.restore.side_effect = lambda key, turns: order.append(key)
+        Pipeline.submit(p, first)
+        Pipeline.restore_conversation(p, 'old-chat', [])
+        Pipeline.submit(p, second)
+        p._queue.put(_Shutdown())
+        Pipeline._run(p)
+        self.assertEqual(order, ['Первый', 'old-chat', 'Второй'])
+        self.assertEqual(p.job_finished.emit.call_count, 2)
 
     def test_unavailable_chat_keeps_draft(self):
         c = self.controller()

@@ -258,6 +258,11 @@ class Asker:
             current = self._current = Conversation()
         return current
 
+    def restore(self, key: str, turns: list[dict]) -> None:
+        """Выбранный в истории разговор становится контекстом следующих вопросов."""
+        self._current = (Conversation(id=key, turns=[Turn(**turn) for turn in turns],
+                                      last_at=time.monotonic()) if key else None)
+
     def close(self) -> None:
         """Разговор окончен: следующий вопрос начнёт новый, даже если ответ свежий."""
         self._current = None

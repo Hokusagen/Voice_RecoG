@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
-from config import CONFIG_PATH, Config, build_version
+from config import CONFIG_PATH, Config, app_data_dir, build_version
 from core import autostart
 from core.ask import Asker
 from core.audio import AudioError, AudioRecorder, microphones
@@ -26,6 +26,7 @@ from core.state import Stage, Status
 from core.stt import WhisperEngine
 from ui import hud as hud_module
 from ui.card import AnswerCard
+from ui.chat_button import ChatButton
 from ui.settings import SettingsWindow, snapshot
 from ui.tray import Tray, app_icon
 
@@ -54,7 +55,9 @@ class Controller(QObject):
 
         self.hud = hud_module.create(cfg.ui)
         self.hud.set_telemetry(lambda: (self.recorder.level, self.recorder.elapsed))
-        self.card = AnswerCard(cfg.ui)
+        self.card = AnswerCard(cfg.ui, app_data_dir() / "chats.json")
+        self.chat_button = ChatButton(cfg.ui)
+        self._pending_jobs = 0
 
         self.tray = Tray()
         self.hotkeys = HotkeyListener(cfg.hotkeys)
@@ -109,6 +112,7 @@ class Controller(QObject):
         self._limit_kind = ""
 
         self._connect()
+        self.pipeline.restore_conversation(self.card.conversation_id, self.card.context())
 
     def _connect(self) -> None:
         self.hotkeys.pressed.connect(self._on_pressed)
@@ -135,7 +139,11 @@ class Controller(QObject):
         self.tray.chat_requested.connect(self._on_open_chat)
         self.card.insert_requested.connect(self._on_card_insert)
         self.card.recheck_requested.connect(self._on_recheck)
-        self.card.closed.connect(self._on_card_closed)
+        self.card.closed.connect(self.chat_button.show)
+        self.card.opened.connect(self.chat_button.hide)
+        self.card.conversation_selected.connect(self.pipeline.restore_conversation)
+        self.chat_button.open_requested.connect(self._on_open_chat)
+        self.pipeline.job_finished.connect(self._on_job_finished)
         self.card.resized.connect(self._on_card_resized)
 
         self.tray.pause_toggled.connect(self._on_pause)
@@ -152,6 +160,7 @@ class Controller(QObject):
         self.tray.set_history(self.history)
         self._update_tooltip()
         self.tray.show()
+        self.chat_button.show()
 
         self.pipeline.start()
         self.hotkeys.start()
@@ -163,7 +172,9 @@ class Controller(QObject):
         self.recorder.cancel_capture()
         self.recorder.close()
         self.hud.hide()
+        self.card.save_history()
         self.card.hide()
+        self.chat_button.hide()
         self.tray.hide()
         self.pipeline.shutdown()
         QApplication.quit()
@@ -217,6 +228,7 @@ class Controller(QObject):
         if self._action is None:
             return
         self._action = None
+        self.card.set_busy(bool(self._pending_jobs))
         self._max_duration.stop()
         self.recorder.cancel_capture()
         self.sounds.play("cancel")
@@ -244,6 +256,9 @@ class Controller(QObject):
             return
 
         self._action = action
+        self.card.set_busy(True)
+        if to_chat:
+            self.card.prepare_question()
         self._record_to_chat = to_chat
         self._card_was_open = self.card.is_open()
         if not to_chat:
@@ -267,6 +282,7 @@ class Controller(QObject):
 
     def _finish_recording(self) -> None:
         action, self._action = self._action, None
+        self.card.set_busy(bool(self._pending_jobs))
         if action is None:
             return
         self._max_duration.stop()
@@ -288,7 +304,7 @@ class Controller(QObject):
             self._show(Stage.WARNING, "Тишина", "микрофон ничего не услышал")
             return
 
-        self.pipeline.submit(
+        self._submit(
             Job(
                 audio=audio,
                 style=None if self._record_to_chat else self._style_for(action),
@@ -378,6 +394,16 @@ class Controller(QObject):
 
     # ---------- карточка ответа ----------
 
+    def _submit(self, job: Job) -> None:
+        self._pending_jobs += 1
+        self.card.set_busy(True)
+        self.pipeline.submit(job)
+
+    @Slot()
+    def _on_job_finished(self) -> None:
+        self._pending_jobs = max(0, self._pending_jobs - 1)
+        self.card.set_busy(self._pending_jobs > 0 or self._action is not None)
+
     @Slot()
     def _on_open_chat(self) -> None:
         self.card.open_chat(self.cfg.hotkeys.record.upper())
@@ -388,7 +414,7 @@ class Controller(QObject):
             self._show(Stage.WARNING, "Вопрос пока не отправлен",
                        "ещё загружаюсь" if not self._ready else "нужен ключ облака в настройках")
             return
-        self.pipeline.submit(Job(audio=np.zeros(0, dtype=np.float32), style=None,
+        self._submit(Job(audio=np.zeros(0, dtype=np.float32), style=None,
                                  hotkey="", ask=True, question=question, followup=True))
         self.card.clear_question()
 
@@ -404,12 +430,7 @@ class Controller(QObject):
     def _on_recheck(self) -> None:
         if self.asker is None:
             return
-        self.pipeline.submit(Job(audio=np.zeros(0, dtype=np.float32), style=None, hotkey="", recheck=True))
-
-    @Slot()
-    def _on_card_closed(self) -> None:
-        if self.asker is not None:
-            self.asker.close()
+        self._submit(Job(audio=np.zeros(0, dtype=np.float32), style=None, hotkey="", recheck=True))
 
     @Slot(int)
     def _on_card_resized(self, _width: int) -> None:
