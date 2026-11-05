@@ -116,6 +116,7 @@ def app_icon(size: int = 256) -> QIcon:
 class Tray(QSystemTrayIcon):
     pause_toggled = Signal(bool)
     history_picked = Signal(str)
+    chat_requested = Signal()
     settings_requested = Signal()
     restart_requested = Signal()
     quit_requested = Signal()
@@ -151,6 +152,10 @@ class Tray(QSystemTrayIcon):
         self._quota_action.setVisible(False)
         menu.addAction(self._quota_action)
         menu.addSeparator()
+
+        chat = QAction("Открыть чат", menu)
+        chat.triggered.connect(self.chat_requested)
+        menu.addAction(chat)
 
         self._pause_action = QAction("Пауза", menu, checkable=True)
         self._pause_action.toggled.connect(self.pause_toggled)

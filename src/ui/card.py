@@ -1,8 +1,8 @@
 """Карточка ответа Дарви: вопрос голосом — ответ в углу экрана, поверх работы.
 
 Решения — design/DARVI-SKILLS.md, «Где живёт Дарви на экране» (6.10.2026):
-Дарви живёт в углу, и карточка раскрывается от него; фокус она не забирает —
-в своём окне работаешь дальше, а кнопки нажимаются мышью; стекло плотнее, чем у
+Дарви живёт в углу, и карточка раскрывается от него; при появлении фокус она не забирает,
+а клик по полю позволяет напечатать вопрос; стекло плотнее, чем у
 пилюли, потому что на нём читают абзацы, а не одну строку. Движение одно:
 высота растёт пружиной вслед за текстом, который приходит потоком.
 
@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTextBrowser,
     QVBoxLayout,
@@ -128,6 +129,7 @@ class _Turn:
 
 
 class AnswerCard(QWidget):
+    question_requested = Signal(str)
     insert_requested = Signal(str)
     """«Вставить»: последний ответ без разметки — в окно, где курсор."""
 
@@ -142,8 +144,9 @@ class AnswerCard(QWidget):
     ui.card_width она уже записана — осталось сохранить настройки."""
 
     def __init__(self, cfg: UIConfig) -> None:
-        flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         super().__init__(None, flags)
+        self.setWindowTitle("Чат с Дарви")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.cfg = cfg
@@ -254,6 +257,21 @@ class AnswerCard(QWidget):
         self._actions.hide()
         layout.addWidget(self._actions)
 
+        composer = QHBoxLayout()
+        composer.setContentsMargins(0, 0, 0, 0)
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Напишите вопрос…")
+        self._input.returnPressed.connect(self._send_question)
+        composer.addWidget(self._input, 1)
+        self._send = self._action("Отправить", self._send_question)
+        composer.addWidget(self._send)
+        self._composer = QWidget()
+        self._composer.setLayout(composer)
+        layout.addWidget(self._composer)
+        self._hint = QLabel("Голосовой вопрос — F8 · Enter — отправить")
+        self._hint.setWordWrap(True)
+        layout.addWidget(self._hint)
+
         self._grip = _Grip(self)
         self._grip.hide()
         # Поля кнопок задаёт таблица стилей, а по кнопкам считается самая
@@ -288,8 +306,13 @@ class AnswerCard(QWidget):
             f"QPushButton:hover {{ background: {hover}; }}"
             f"QPushButton:disabled {{ color: {muted}; }}"
         )
-        for widget in (self._insert, self._copy, self._recheck):
+        for widget in (self._insert, self._copy, self._recheck, self._send):
             widget.setStyleSheet(button)
+        self._input.setStyleSheet(
+            f"QLineEdit {{ color: {text}; background: {hover}; border: 1px solid {line};"
+            " border-radius: 8px; padding: 6px; }"
+        )
+        self._hint.setStyleSheet(f"color: {muted}; background: transparent;")
         self._close.setStyleSheet(
             f"QPushButton {{ color: {muted}; background: transparent; border: none; border-radius: 12px; }}"
             f"QPushButton:hover {{ background: {hover}; color: {text}; }}"
@@ -300,6 +323,27 @@ class AnswerCard(QWidget):
 
     # ---------- что показывать ----------
 
+    def open_chat(self, hotkey: str = "F8") -> None:
+        self._hint.setText(f"Голосовой вопрос — {hotkey} · Enter — отправить")
+        if not self.is_open():
+            self._appear()
+        self.raise_()
+        self.activateWindow()
+        self._input.setFocus()
+        QTimer.singleShot(450, self._focus_question)
+
+    def _focus_question(self) -> None:
+        if self.is_open() and self.isActiveWindow():
+            self._input.setFocus()
+
+    def _send_question(self) -> None:
+        question = self._input.text().strip()
+        if question:
+            self.question_requested.emit(question)
+
+    def clear_question(self) -> None:
+        self._input.clear()
+
     @Slot(str, int, str, bool)
     def start(self, conversation: str, turn: int, question: str, searching: bool) -> None:
         """Вопрос ушёл модели. turn — номер хода с единицы; у перепроверки —
@@ -309,7 +353,9 @@ class AnswerCard(QWidget):
         его расслышали, пока модель думает или ищет. Скрытая карточка и новый
         разговор ждут первого слова ответа.
         """
-        if conversation == self._conversation and self.is_open():
+        if self.is_open():
+            if conversation != self._conversation:
+                self._conversation, self._turns = conversation, []
             self._deferred = None
             self._begin(turn - 1, question, searching)
         else:
@@ -461,6 +507,8 @@ class AnswerCard(QWidget):
         self._pending = self._previous = self._deferred = None
         self._waiting = False
         self._conversation = ""
+        self._turns.clear()
+        self._input.clear()
         self.dismiss()
         self.closed.emit()
 
@@ -496,7 +544,6 @@ class AnswerCard(QWidget):
         self._height.snap(0.0)
         self._place()
         self.show()
-        _no_activate(self)
         self._retarget()
         self._tick.start()
 
@@ -542,7 +589,7 @@ class AnswerCard(QWidget):
             if block.blockFormat().property(_ROLE) == "question":
                 self._anchors.append(block.position())
             block = block.next()
-        self._question_label.setText(self._turns[0].question if self._turns else "")
+        self._question_label.setText(self._turns[0].question if self._turns else "Чат с Дарви")
         self._update_actions()
         doc.size()  # раскладка целиком, чтобы прокрутка знала новую длину
         if self._pin is None:
@@ -655,6 +702,8 @@ class AnswerCard(QWidget):
         total += GAP + text_h + 4
         if not self._actions.isHidden():
             total += GAP + self._actions.sizeHint().height()
+        total += GAP + self._composer.sizeHint().height()
+        total += GAP + self._hint.heightForWidth(inner)
         total += PAD
         return total
 
@@ -1020,21 +1069,3 @@ def _primary_button_down() -> bool:
     sm_swapbutton, vk_lbutton, vk_rbutton = 23, 0x01, 0x02
     button = vk_rbutton if user32.GetSystemMetrics(sm_swapbutton) else vk_lbutton
     return bool(user32.GetAsyncKeyState(button) & 0x8000)
-
-
-def _no_activate(widget: QWidget) -> None:
-    """Клик по карточке не должен уводить фокус из окна, где работает человек.
-
-    Флага Qt WindowDoesNotAcceptFocus хватает для клавиатуры, но не для мыши:
-    без WS_EX_NOACTIVATE нажатие кнопки активирует окно карточки, и «Вставить»
-    вставило бы текст в неё саму.
-    """
-    if sys.platform != "win32":
-        return
-    import ctypes
-
-    gwl_exstyle, ws_ex_noactivate = -20, 0x08000000
-    user32 = ctypes.windll.user32
-    hwnd = int(widget.winId())
-    style = user32.GetWindowLongW(hwnd, gwl_exstyle)
-    user32.SetWindowLongW(hwnd, gwl_exstyle, style | ws_ex_noactivate)

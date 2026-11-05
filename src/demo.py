@@ -352,6 +352,32 @@ def card_demo(cfg: Config) -> dict:
     return {"hud": hud, "card": card, "clock": clock, "stream": stream}
 
 
+def chat_demo(cfg: Config) -> dict:
+    """Ручная проверка ввода и открытия чата без запросов в облако."""
+    from ui.card import AnswerCard
+    from ui.tray import Tray
+
+    card = AnswerCard(cfg.ui)
+    card.setWindowTitle("VoiceTyper — демо чата")
+    tray = Tray()
+    tray.chat_requested.connect(card.open_chat)
+    tray.quit_requested.connect(QApplication.quit)
+    tray.show()
+    turns = []
+
+    def reply(question: str) -> None:
+        turns.append(question)
+        card.clear_question()
+        card.start("demo-chat", len(turns), question, False)
+        card.feed("Это демонстрационный ответ. Вопрос принят: " + question)
+        card.finish([])
+
+    card.question_requested.connect(reply)
+    card.closed.connect(turns.clear)
+    card.open_chat(cfg.hotkeys.record.upper())
+    return {"card": card, "tray": tray}
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("VoiceTyper Demo")
@@ -365,8 +391,12 @@ def main() -> int:
     cycle_fonts = argument.lower() == "fonts"
     voice_only = argument.lower() == "voice"
     card_only = argument.lower() == "card"
+    chat_only = argument.lower() == "chat"
 
-    theme.init_fonts(argument if argument and not (cycle_fonts or voice_only or card_only) else cfg.ui.font)
+    theme.init_fonts(argument if argument and not (cycle_fonts or voice_only or card_only or chat_only) else cfg.ui.font)
+    if chat_only:
+        keep = chat_demo(cfg)
+        return app.exec()
     if card_only:
         keep = card_demo(cfg)  # noqa: F841 — держит окна и таймеры живыми
         return app.exec()

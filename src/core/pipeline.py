@@ -40,6 +40,9 @@ class Job:
     ask: bool = False
     """Вопрос Дарви: распознать и спросить модель, ничего не вставляя."""
 
+    question: str | None = None
+    """Напечатанный вопрос: обход распознавания и архива звука."""
+
     recheck: bool = False
     """Задать последний вопрос заново с поиском; звука у такой задачи нет."""
 
@@ -394,6 +397,12 @@ class Pipeline(QObject):
         conversation = self._asker.conversation(keep=job.followup)
         record.conversation = conversation.id
         record.turn = len(conversation.turns) + 1
+        if job.question is not None:
+            question = job.question.strip()
+            if question:
+                record.question = question
+                self._ask(record, question, conversation, started)
+            return
         record.stt_prompt = self._asker.whisper_hint(conversation) or self._whisper.cfg.initial_prompt
         record.audio_file = self._asker.keep_audio(job.audio, self._sample_rate, record.id)
 

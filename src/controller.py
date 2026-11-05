@@ -78,6 +78,7 @@ class Controller(QObject):
         """Выход ради перезапуска: новый экземпляр поднимет main после цикла событий."""
 
         self._action: str | None = None
+        self._record_to_chat = False
         self._card_was_open = False
         """Карточка была на экране, когда началась запись: диктовку она
         уступает сразу, а обращение к Дарви должно продолжить её разговор."""
@@ -130,6 +131,8 @@ class Controller(QObject):
         self.pipeline.searching.connect(self.card.searching)
         self.pipeline.sources.connect(self.card.finish)
         self.pipeline.answer_failed.connect(self.card.fail)
+        self.card.question_requested.connect(self._on_text_question)
+        self.tray.chat_requested.connect(self._on_open_chat)
         self.card.insert_requested.connect(self._on_card_insert)
         self.card.recheck_requested.connect(self._on_recheck)
         self.card.closed.connect(self._on_card_closed)
@@ -225,7 +228,8 @@ class Controller(QObject):
         if not self._ready:
             self._show(Stage.WARNING, "Ещё загружаюсь", "модель не готова")
             return
-        if action == "ask" and self.asker is None:
+        to_chat = action == "ask" or (action == "record" and self.card.is_open())
+        if to_chat and self.asker is None:
             # Сказать это до записи, а не после: иначе человек надиктует
             # вопрос целиком и только потом узнает, что спросить некого.
             self.sounds.play("error")
@@ -240,8 +244,9 @@ class Controller(QObject):
             return
 
         self._action = action
+        self._record_to_chat = to_chat
         self._card_was_open = self.card.is_open()
-        if action != "ask":
+        if not to_chat:
             # Диктовка — значит, человек вернулся к работе. Разговор при этом
             # не кончается: уточнение в пределах ask.followup_s его продолжит
             # и вернёт карточку со всей лентой.
@@ -251,7 +256,7 @@ class Controller(QObject):
         if self.cfg.hotkeys.mode == "toggle":
             hint = f"нажмите {self.cfg.hotkeys.record.upper()} ещё раз"
         style = self._style_for(action)
-        if action == "ask":
+        if to_chat:
             hint = f"вопрос · {hint}"
         elif style == "dry":
             hint = f"сухо · {hint}"
@@ -286,12 +291,12 @@ class Controller(QObject):
         self.pipeline.submit(
             Job(
                 audio=audio,
-                style=self._style_for(action),
+                style=None if self._record_to_chat else self._style_for(action),
                 hotkey=getattr(self.cfg.hotkeys, action),
-                ask=action == "ask",
+                ask=self._record_to_chat,
                 # Вопросу — открыта ли карточка сейчас: крестик, нажатый
                 # посреди вопроса, разговор уже закончил.
-                followup=self.card.is_open() if action == "ask" else self._card_was_open,
+                followup=self.card.is_open() if self._record_to_chat else self._card_was_open,
             )
         )
 
@@ -373,11 +378,27 @@ class Controller(QObject):
 
     # ---------- карточка ответа ----------
 
+    @Slot()
+    def _on_open_chat(self) -> None:
+        self.card.open_chat(self.cfg.hotkeys.record.upper())
+
+    @Slot(str)
+    def _on_text_question(self, question: str) -> None:
+        if not self._ready or self.asker is None:
+            self._show(Stage.WARNING, "Вопрос пока не отправлен",
+                       "ещё загружаюсь" if not self._ready else "нужен ключ облака в настройках")
+            return
+        self.pipeline.submit(Job(audio=np.zeros(0, dtype=np.float32), style=None,
+                                 hotkey="", ask=True, question=question, followup=True))
+        self.card.clear_question()
+
     @Slot(str)
     def _on_card_insert(self, text: str) -> None:
-        # Карточка фокус не берёт, поэтому активным осталось окно, где человек
-        # работал, — туда и вставляем, как диктовку.
-        self.paster.paste(text)
+        # После ввода вопроса фокус принадлежит карточке. Скрытие возвращает
+        # прежнее окно; вставляем после обработки смены фокуса системой.
+        self.card.dismiss()
+        self.card.hide()
+        QTimer.singleShot(150, lambda: self.paster.paste(text))
 
     @Slot()
     def _on_recheck(self) -> None:
